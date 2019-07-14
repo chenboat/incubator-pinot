@@ -142,7 +142,6 @@
     To change kafka connector dependency, we only need to update this version number config.
     TODO: figure out a way to inject kafka dependency instead of explicitly setting the kafka module dependency -->
     <kafka.version>0.9</kafka.version>
-    <kafka.scala.version>2.10</kafka.scala.version>
   </properties>
 
   <profiles>
