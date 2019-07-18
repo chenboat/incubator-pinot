@@ -51,7 +51,7 @@ import org.apache.pinot.controller.ControllerConf;
 import org.apache.pinot.controller.validation.OfflineSegmentIntervalChecker;
 import org.apache.pinot.controller.validation.RealtimeSegmentValidationManager;
 import org.apache.pinot.core.indexsegment.generator.SegmentVersion;
-import org.apache.pinot.core.realtime.impl.kafka.KafkaStarterUtils;
+import org.apache.pinot.tools.CommonKafkaUtils;
 import org.apache.pinot.util.TestUtils;
 import org.testng.Assert;
 import org.testng.ITestContext;
@@ -212,7 +212,7 @@ public class ControllerPeriodicTasksIntegrationTests extends BaseClusterIntegrat
     Assert.assertNotNull(outgoingTimeUnit);
     String timeType = outgoingTimeUnit.toString();
 
-    addRealtimeTable(table, useLlc(), KafkaStarterUtils.DEFAULT_KAFKA_BROKER, KafkaStarterUtils.DEFAULT_ZK_STR, topic,
+    addRealtimeTable(table, useLlc(), CommonKafkaUtils.DEFAULT_KAFKA_BROKER, CommonKafkaUtils.DEFAULT_ZK_STR, topic,
         getRealtimeSegmentFlushSize(), avroFile, timeColumnName, timeType, schemaName, TENANT_NAME, TENANT_NAME,
         getLoadMode(), getSortedColumn(), getInvertedIndexColumns(), getBloomFilterIndexColumns(), getRawIndexColumns(),
         getTaskConfig(), getStreamConsumerFactoryClassName());

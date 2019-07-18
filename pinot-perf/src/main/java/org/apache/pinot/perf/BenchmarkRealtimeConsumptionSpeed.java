@@ -25,10 +25,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
-import kafka.server.KafkaServerStartable;
 import org.apache.pinot.common.utils.TarGzCompressionUtils;
-import org.apache.pinot.core.realtime.impl.kafka.KafkaStarterUtils;
+import org.apache.pinot.core.realtime.stream.StreamDataServerStartable;
 import org.apache.pinot.integration.tests.ClusterIntegrationTestUtils;
+import org.apache.pinot.tools.CommonKafkaUtils;
 import org.apache.pinot.integration.tests.RealtimeClusterIntegrationTest;
 import org.apache.pinot.util.TestUtils;
 
@@ -58,12 +58,12 @@ public class BenchmarkRealtimeConsumptionSpeed extends RealtimeClusterIntegratio
       throws Exception {
     // Start ZK and Kafka
     startZk();
-    KafkaServerStartable kafkaStarter = KafkaStarterUtils
-        .startServer(KafkaStarterUtils.DEFAULT_KAFKA_PORT, KafkaStarterUtils.DEFAULT_BROKER_ID,
-            KafkaStarterUtils.DEFAULT_ZK_STR, KafkaStarterUtils.getDefaultKafkaConfiguration());
+    StreamDataServerStartable kafkaStarter = CommonKafkaUtils
+        .startServer(CommonKafkaUtils.DEFAULT_KAFKA_PORT, CommonKafkaUtils.DEFAULT_BROKER_ID,
+            CommonKafkaUtils.DEFAULT_ZK_STR, CommonKafkaUtils.getDefaultKafkaConfiguration());
 
     // Create Kafka topic
-    KafkaStarterUtils.createTopic(getKafkaTopic(), KafkaStarterUtils.DEFAULT_ZK_STR, 10);
+    kafkaStarter.createTopic(getKafkaTopic(), CommonKafkaUtils.getTopicCreationProps(10));
 
     // Unpack data (needed to get the Avro schema)
     TarGzCompressionUtils.unTar(new File(TestUtils.getFileFromResourceUrl(
@@ -93,7 +93,7 @@ public class BenchmarkRealtimeConsumptionSpeed extends RealtimeClusterIntegratio
       public void run() {
         try {
           ClusterIntegrationTestUtils
-              .pushRandomAvroIntoKafka(avroFiles.get(0), KafkaStarterUtils.DEFAULT_KAFKA_BROKER, getKafkaTopic(),
+              .pushRandomAvroIntoKafka(avroFiles.get(0), CommonKafkaUtils.DEFAULT_KAFKA_BROKER, getKafkaTopic(),
                   ROW_COUNT, getMaxNumKafkaMessagesPerBatch(), getKafkaMessageHeader(), getPartitionColumn());
         } catch (Exception e) {
           // Ignored

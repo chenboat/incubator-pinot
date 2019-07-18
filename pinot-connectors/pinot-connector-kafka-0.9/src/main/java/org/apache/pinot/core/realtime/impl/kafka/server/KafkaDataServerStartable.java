@@ -16,86 +16,31 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.pinot.core.realtime.impl.kafka;
+package org.apache.pinot.core.realtime.impl.kafka.server;
 
 import java.io.File;
 import java.security.Permission;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Properties;
 import kafka.admin.TopicCommand;
 import kafka.server.KafkaConfig;
 import kafka.server.KafkaServerStartable;
 import org.I0Itec.zkclient.ZkClient;
 import org.apache.commons.io.FileUtils;
-import org.apache.pinot.common.utils.ZkStarter;
+import org.apache.pinot.core.realtime.stream.StreamDataServerStartable;
 
 
-/**
- * Utilities to start Kafka during unit tests.
- *
- */
-public class KafkaStarterUtils {
-  public static final int DEFAULT_KAFKA_PORT = 19092;
-  public static final int DEFAULT_BROKER_ID = 0;
-  public static final String DEFAULT_ZK_STR = ZkStarter.DEFAULT_ZK_STR + "/kafka";
-  public static final String DEFAULT_KAFKA_BROKER = "localhost:" + DEFAULT_KAFKA_PORT;
+public class KafkaDataServerStartable implements StreamDataServerStartable {
+  private static final String PORT = "port";
+  private static final String BROKER_ID = "brokerId";
+  private static final String ZK_STR = "zkStr";
+  private static final String LOG_DIR_PATH = "logDirPath";
+  private static final int DEFAULT_TOPIC_PARTITION = 1;
 
-  public static Properties getDefaultKafkaConfiguration() {
-    final Properties configuration = new Properties();
-
-    // Enable topic deletion by default for integration tests
-    configureTopicDeletion(configuration, true);
-
-    // Set host name
-    configureHostName(configuration, "localhost");
-
-    return configuration;
-  }
-
-  public static List<KafkaServerStartable> startServers(final int brokerCount, final int port, final String zkStr,
-      final Properties configuration) {
-    List<KafkaServerStartable> startables = new ArrayList<>(brokerCount);
-
-    for (int i = 0; i < brokerCount; i++) {
-      startables.add(startServer(port + i, i, zkStr, "/tmp/kafka-" + Double.toHexString(Math.random()), configuration));
-    }
-
-    return startables;
-  }
-
-  public static KafkaServerStartable startServer(final int port, final int brokerId, final String zkStr,
-      final Properties configuration) {
-    return startServer(port, brokerId, zkStr, "/tmp/kafka-" + Double.toHexString(Math.random()), configuration);
-  }
-
-  public static KafkaServerStartable startServer(final int port, final int brokerId, final String zkStr,
-      final String logDirPath, final Properties configuration) {
-    // Create the ZK nodes for Kafka, if needed
-    int indexOfFirstSlash = zkStr.indexOf('/');
-    if (indexOfFirstSlash != -1) {
-      String bareZkUrl = zkStr.substring(0, indexOfFirstSlash);
-      String zkNodePath = zkStr.substring(indexOfFirstSlash);
-      ZkClient client = new ZkClient(bareZkUrl);
-      client.createPersistent(zkNodePath, true);
-      client.close();
-    }
-
-    File logDir = new File(logDirPath);
-    logDir.mkdirs();
-
-    configureKafkaPort(configuration, port);
-    configureZkConnectionString(configuration, zkStr);
-    configureBrokerId(configuration, brokerId);
-    configureKafkaLogDirectory(configuration, logDir);
-    configuration.put("zookeeper.session.timeout.ms", "60000");
-    KafkaConfig config = new KafkaConfig(configuration);
-
-    KafkaServerStartable serverStartable = new KafkaServerStartable(config);
-    serverStartable.startup();
-
-    return serverStartable;
-  }
+  private KafkaServerStartable serverStartable;
+  private String zkStr;
+  private int port;
+  private int brokerId;
+  private String logDirPath;
 
   public static void configureSegmentSizeBytes(Properties properties, int segmentSize) {
     properties.put("log.segment.bytes", Integer.toString(segmentSize));
@@ -129,17 +74,6 @@ public class KafkaStarterUtils {
     configuration.put("host.name", hostName);
   }
 
-  public static void stopServer(KafkaServerStartable serverStartable) {
-    serverStartable.shutdown();
-    FileUtils.deleteQuietly(new File(serverStartable.serverConfig().logDirs().apply(0)));
-  }
-
-  public static void createTopic(String kafkaTopic, String zkStr, int partitionCount) {
-    invokeTopicCommand(
-        new String[]{"--create", "--zookeeper", zkStr, "--replication-factor", "1", "--partitions", Integer.toString(
-            partitionCount), "--topic", kafkaTopic});
-  }
-
   private static void invokeTopicCommand(String[] args) {
     // jfim: Use Java security to trap System.exit in Kafka 0.9's TopicCommand
     System.setSecurityManager(new SecurityManager() {
@@ -167,5 +101,57 @@ public class KafkaStarterUtils {
 
   public static void deleteTopic(String kafkaTopic, String zkStr) {
     invokeTopicCommand(new String[]{"--delete", "--zookeeper", zkStr, "--topic", kafkaTopic});
+  }
+
+  public void init(Properties props) {
+
+    port = (Integer) props.get(PORT);
+    brokerId = (Integer) props.get(BROKER_ID);
+    zkStr = props.getProperty(ZK_STR);
+    logDirPath = props.getProperty(LOG_DIR_PATH);
+
+    // Create the ZK nodes for Kafka, if needed
+    int indexOfFirstSlash = zkStr.indexOf('/');
+    if (indexOfFirstSlash != -1) {
+      String bareZkUrl = zkStr.substring(0, indexOfFirstSlash);
+      String zkNodePath = zkStr.substring(indexOfFirstSlash);
+      ZkClient client = new ZkClient(bareZkUrl);
+      client.createPersistent(zkNodePath, true);
+      client.close();
+    }
+
+    File logDir = new File(logDirPath);
+    logDir.mkdirs();
+
+    configureKafkaPort(props, port);
+    configureZkConnectionString(props, zkStr);
+    configureBrokerId(props, brokerId);
+    configureKafkaLogDirectory(props, logDir);
+    props.put("zookeeper.session.timeout.ms", "60000");
+    KafkaConfig config = new KafkaConfig(props);
+
+    serverStartable = new KafkaServerStartable(config);
+  }
+
+  @Override
+  public void start() {
+    serverStartable.startup();
+  }
+
+  @Override
+  public void stop() {
+    serverStartable.shutdown();
+    FileUtils.deleteQuietly(new File(serverStartable.serverConfig().logDirs().apply(0)));
+  }
+
+  @Override
+  public void createTopic(String topic, Properties props) {
+    int partitionCount = DEFAULT_TOPIC_PARTITION;
+    if (props.containsKey("partition")) {
+      partitionCount = (Integer) props.get("partition");
+    }
+    invokeTopicCommand(
+        new String[]{"--create", "--zookeeper", this.zkStr, "--replication-factor", "1", "--partitions", Integer.toString(
+            partitionCount), "--topic", topic});
   }
 }
