@@ -964,7 +964,7 @@ public class PinotLLCRealtimeSegmentManagerTest {
     segmentManager._paths.clear();
     segmentManager._records.clear();
     Set<String> prevInstances = idealState.getInstanceSet(committingSegmentMetadata.getSegmentName());
-    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset);
+    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset).withSegmentLocation("server1");
     CommittingSegmentDescriptor committingSegmentDescriptor = CommittingSegmentDescriptor
         .fromSegmentCompletionReqParamsAndMetadata(reqParams, segmentManager.newMockSegmentMetadata());
     boolean status = segmentManager.commitSegmentMetadata(rawTableName, committingSegmentDescriptor);
@@ -988,7 +988,7 @@ public class PinotLLCRealtimeSegmentManagerTest {
     segmentManager._paths.clear();
     segmentManager._records.clear();
     prevInstances = idealState.getInstanceSet(committingSegmentMetadata.getSegmentName());
-    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset);
+    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset).withSegmentLocation("server1");
     committingSegmentDescriptor = CommittingSegmentDescriptor
         .fromSegmentCompletionReqParamsAndMetadata(reqParams, segmentManager.newMockSegmentMetadata());
     status = segmentManager.commitSegmentMetadata(rawTableName, committingSegmentDescriptor);
@@ -1007,7 +1007,7 @@ public class PinotLLCRealtimeSegmentManagerTest {
     committingSegmentMetadata = new LLCRealtimeSegmentZKMetadata(newZnRec);
     segmentManager._paths.clear();
     segmentManager._records.clear();
-    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset);
+    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset).withSegmentLocation("server1");
     // We do not expect the segment metadata to be used. Thus reuse the current metadata.
     committingSegmentDescriptor = CommittingSegmentDescriptor
         .fromSegmentCompletionReqParamsAndMetadata(reqParams, segmentManager.getMockSegmentMetadata());
@@ -1024,7 +1024,7 @@ public class PinotLLCRealtimeSegmentManagerTest {
     committingSegmentMetadata = new LLCRealtimeSegmentZKMetadata(oldZnRec);
     segmentManager._paths.clear();
     segmentManager._records.clear();
-    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset);
+    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset).withSegmentLocation("server1");
     // We do not expect the segment metadata to be used. Thus reuse the current metadata.
     committingSegmentDescriptor = CommittingSegmentDescriptor
         .fromSegmentCompletionReqParamsAndMetadata(reqParams, segmentManager.getMockSegmentMetadata());
@@ -1041,7 +1041,7 @@ public class PinotLLCRealtimeSegmentManagerTest {
     segmentManager._records.clear();
     committingSegmentMetadata = new LLCRealtimeSegmentZKMetadata(newZnRec);
     prevInstances = idealState.getInstanceSet(committingSegmentMetadata.getSegmentName());
-    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset);
+    reqParams.withSegmentName(committingSegmentMetadata.getSegmentName()).withOffset(nextOffset).withSegmentLocation("server1");
     committingSegmentDescriptor = CommittingSegmentDescriptor
         .fromSegmentCompletionReqParamsAndMetadata(reqParams, segmentManager.newMockSegmentMetadata());
     status = segmentManager.commitSegmentMetadata(rawTableName, committingSegmentDescriptor);
@@ -1072,6 +1072,10 @@ public class PinotLLCRealtimeSegmentManagerTest {
     Assert.assertEquals(oldMetadata.getStatus(), CommonConstants.Segment.Realtime.Status.DONE);
     Assert.assertEquals(newMetadata.getStatus(), CommonConstants.Segment.Realtime.Status.IN_PROGRESS);
     Assert.assertNotNull(oldMetadata.getDownloadUrl());
+    System.out.println("Segment location in old: " + oldMetadata.getDownloadUrl());
+    System.out.println("Segment location in new: " + newMetadata.getDownloadUrl());
+    // Check the download url is the server location url.
+    Assert.assertFalse(oldMetadata.getDownloadUrl().isEmpty());
     Assert.assertEquals(Long.valueOf(oldMetadata.getCrc()), Long.valueOf(FakePinotLLCRealtimeSegmentManager.CRC));
     Assert.assertEquals(oldMetadata.getStartTime(), FakePinotLLCRealtimeSegmentManager.INTERVAL.getStartMillis());
     Assert.assertEquals(oldMetadata.getEndTime(), FakePinotLLCRealtimeSegmentManager.INTERVAL.getEndMillis());

@@ -1165,6 +1165,9 @@ public class SegmentCompletionTest {
 
     @Override
     public boolean commitSegmentMetadata(String rawTableName, CommittingSegmentDescriptor committingSegmentDescriptor) {
+      if ("doNotCommitMe".equals(committingSegmentDescriptor.getSegmentLocation())) {
+        return false;
+      }
       _segmentMetadata.setStatus(CommonConstants.Segment.Realtime.Status.DONE);
       _segmentMetadata.setEndOffset(committingSegmentDescriptor.getNextOffset());
       _segmentMetadata.setDownloadUrl(URIUtils.constructDownloadUrl(CONTROLLER_CONF.generateVipUrl(), rawTableName,

@@ -385,6 +385,7 @@ public class PinotLLCRealtimeSegmentManager {
    * @return boolean
    */
   public boolean commitSegmentMetadata(String rawTableName, CommittingSegmentDescriptor committingSegmentDescriptor) {
+    System.out.println( "CSD:" + committingSegmentDescriptor.toString());
     if (_isStopping) {
       LOGGER.info("Returning false since the controller is stopping");
       return false;
@@ -523,8 +524,7 @@ public class PinotLLCRealtimeSegmentManager {
     committingSegmentMetadata.setEndOffset(nextOffset);
     committingSegmentMetadata.setStatus(CommonConstants.Segment.Realtime.Status.DONE);
     String rawTableName = TableNameBuilder.extractRawTableName(realtimeTableName);
-    committingSegmentMetadata.setDownloadUrl(
-        URIUtils.constructDownloadUrl(_controllerConf.generateVipUrl(), rawTableName, committingSegmentNameStr));
+    committingSegmentMetadata.setDownloadUrl(committingSegmentDescriptor.getSegmentLocation());
     committingSegmentMetadata.setCrc(Long.valueOf(segmentMetadata.getCrc()));
     committingSegmentMetadata.setStartTime(segmentMetadata.getTimeInterval().getStartMillis());
     committingSegmentMetadata.setEndTime(segmentMetadata.getTimeInterval().getEndMillis());

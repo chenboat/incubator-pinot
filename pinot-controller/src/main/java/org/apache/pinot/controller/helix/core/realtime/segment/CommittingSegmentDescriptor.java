@@ -100,4 +100,9 @@ public class CommittingSegmentDescriptor {
   public void setSegmentMetadata(SegmentMetadataImpl segmentMetadata) {
     _segmentMetadata = segmentMetadata;
   }
+
+  @Override
+  public java.lang.String toString() {
+    return _segmentName + "|" + _segmentLocation + "|" + _segmentMetadata.toString();
+  }
 }

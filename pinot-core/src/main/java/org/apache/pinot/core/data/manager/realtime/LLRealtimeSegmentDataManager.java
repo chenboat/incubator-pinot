@@ -575,9 +575,11 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
                 // We could not build the segment. Go into error state.
                 _state = State.ERROR;
               } else {
+                // Commit the segment meta data to controller and asynchronously write the segment file to Pinot FS.
                 success = commitSegment(response);
                 if (success) {
                   _state = State.COMMITTED;
+                  // TODO (tingchen) Asynchronously upload the segment file to Pinot FS for backup.
                 } else {
                   // If for any reason commit failed, we don't want to be in COMMITTING state when we hold.
                   // Change the state to HOLDING before looping around.
@@ -759,7 +761,6 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
   }
 
   private SegmentCompletionProtocol.Response doSplitCommit(SegmentCompletionProtocol.Response prevResponse) {
-    final File segmentTarFile = new File(_segmentBuildDescriptor.getSegmentTarFilePath());
     SegmentCompletionProtocol.Request.Params params = new SegmentCompletionProtocol.Request.Params();
 
     params.withSegmentName(_segmentNameStr).withOffset(_currentOffset).withNumRows(_numRowsConsumed)
@@ -778,17 +779,10 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
 
     params = new SegmentCompletionProtocol.Request.Params();
     params.withOffset(_currentOffset).withSegmentName(_segmentNameStr).withInstanceId(_instanceId);
-    SegmentCompletionProtocol.Response segmentCommitUploadResponse =
-        _protocolHandler.segmentCommitUpload(params, segmentTarFile, prevResponse.getControllerVipUrl());
-    if (!segmentCommitUploadResponse.getStatus()
-        .equals(SegmentCompletionProtocol.ControllerResponseStatus.UPLOAD_SUCCESS)) {
-      segmentLogger.warn("Segment upload failed  with response {}", segmentCommitUploadResponse.toJsonString());
-      return SegmentCompletionProtocol.RESP_FAILED;
-    }
 
     params = new SegmentCompletionProtocol.Request.Params();
     params.withInstanceId(_instanceId).withOffset(_currentOffset).withSegmentName(_segmentNameStr)
-        .withSegmentLocation(segmentCommitUploadResponse.getSegmentLocation()).withNumRows(_numRowsConsumed)
+        .withSegmentLocation(_instanceId).withNumRows(_numRowsConsumed)
         .withBuildTimeMillis(_segmentBuildDescriptor.getBuildTimeMillis())
         .withSegmentSizeBytes(_segmentBuildDescriptor.getSegmentSizeBytes())
         .withWaitTimeMillis(_segmentBuildDescriptor.getWaitTimeMillis());
@@ -801,6 +795,8 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
     } else {
       commitEndResponse = _protocolHandler.segmentCommitEnd(params);
     }
+
+    // TODO(tingchen) Upload to the Pinot FS store.
 
     if (!commitEndResponse.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.COMMIT_SUCCESS)) {
       segmentLogger.warn("CommitEnd failed  with response {}", commitEndResponse.toJsonString());
@@ -836,7 +832,6 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
   }
 
   protected SegmentCompletionProtocol.Response postSegmentCommitMsg() {
-    final File segmentTarFile = new File(_segmentBuildDescriptor.getSegmentTarFilePath());
     SegmentCompletionProtocol.Request.Params params = new SegmentCompletionProtocol.Request.Params();
     params.withInstanceId(_instanceId).withOffset(_currentOffset).withSegmentName(_segmentNameStr)
         .withNumRows(_numRowsConsumed).withInstanceId(_instanceId)
@@ -846,7 +841,7 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
     if (_isOffHeap) {
       params.withMemoryUsedBytes(_memoryManager.getTotalAllocatedBytes());
     }
-    SegmentCompletionProtocol.Response response = _protocolHandler.segmentCommit(params, segmentTarFile);
+    SegmentCompletionProtocol.Response response = _protocolHandler.segmentCommit(params);
     if (!response.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.COMMIT_SUCCESS)) {
       segmentLogger.warn("Commit failed  with response {}", response.toJsonString());
     }

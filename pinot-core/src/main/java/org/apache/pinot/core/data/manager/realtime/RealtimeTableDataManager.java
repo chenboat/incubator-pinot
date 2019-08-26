@@ -269,6 +269,7 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
 
   public void downloadAndReplaceSegment(@Nonnull String segmentName,
       @Nonnull LLCRealtimeSegmentZKMetadata llcSegmentMetadata, @Nonnull IndexLoadingConfig indexLoadingConfig) {
+    // The segment download url could be a peer server or a remote storage url.
     final String uri = llcSegmentMetadata.getDownloadUrl();
     File tempSegmentFolder =
         new File(_indexDir, "tmp-" + segmentName + "." + String.valueOf(System.currentTimeMillis()));

@@ -1019,13 +1019,6 @@ public class SegmentCompletionManager {
       }
       LOGGER.info("Committing segment {} at offset {} winner {}", _segmentName.getSegmentName(), offset, instanceId);
       _state = State.COMMITTING;
-      // In case of splitCommit, the segment is uploaded to a unique file name indicated by segmentLocation,
-      // so we need to move the segment file to its permanent location first before committing the metadata.
-      if (isSplitCommit) {
-        if (!_segmentManager.commitSegmentFile(_segmentName.getTableName(), committingSegmentDescriptor)) {
-          return SegmentCompletionProtocol.RESP_FAILED;
-        }
-      }
       success = _segmentManager.commitSegmentMetadata(_segmentName.getTableName(), committingSegmentDescriptor);
       if (success) {
         _state = State.COMMITTED;

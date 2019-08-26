@@ -18,6 +18,7 @@
  */
 package org.apache.pinot.common.metadata.segment;
 
+import java.util.List;
 import java.util.Map;
 import org.apache.helix.ZNRecord;
 
@@ -32,12 +33,14 @@ public class LLCRealtimeSegmentZKMetadata extends RealtimeSegmentZKMetadata {
   private static final String END_OFFSET = "segment.realtime.endOffset";
   private static final String NUM_REPLICAS = "segment.realtime.numReplicas";
   public static final String DOWNLOAD_URL = "segment.realtime.download.url";
+  public static final String SEGMENT_LOCATIONS = "segment.realtime.locations";
 
   private long _startOffset;
   private long _endOffset;
   private int _numReplicas;
 
   private String _downloadUrl = null;
+  private List<String> _locations = null;
 
   public LLCRealtimeSegmentZKMetadata() {
     super();
@@ -90,6 +93,7 @@ public class LLCRealtimeSegmentZKMetadata extends RealtimeSegmentZKMetadata {
     znRecord.setLongField(END_OFFSET, _endOffset);
     znRecord.setIntField(NUM_REPLICAS, _numReplicas);
     znRecord.setSimpleField(DOWNLOAD_URL, _downloadUrl);
+    znRecord.setListField(SEGMENT_LOCATIONS, _locations);
     return znRecord;
   }
 
