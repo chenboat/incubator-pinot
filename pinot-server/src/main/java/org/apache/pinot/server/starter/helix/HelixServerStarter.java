@@ -34,6 +34,7 @@ import org.apache.helix.HelixAdmin;
 import org.apache.helix.HelixManager;
 import org.apache.helix.HelixManagerFactory;
 import org.apache.helix.InstanceType;
+import org.apache.helix.PropertyKey;
 import org.apache.helix.SystemPropertyKeys;
 import org.apache.helix.ZNRecord;
 import org.apache.helix.manager.zk.ZKHelixAdmin;
@@ -158,6 +159,14 @@ public class HelixServerStarter {
     _helixManager =
         HelixManagerFactory.getZKHelixManager(helixClusterName, _instanceId, InstanceType.PARTICIPANT, _zkServers);
     _helixManager.connect();
+
+    // Overwrite the server netty host and port. This could be hidden behind a flag.
+    PropertyKey.Builder keyBuilder = _helixManager.getHelixDataAccessor().keyBuilder();
+    InstanceConfig config =  _helixManager.getHelixDataAccessor().getProperty(keyBuilder.instanceConfig(_instanceId));
+    config.setHostName(_serverConf.getString(KEY_OF_SERVER_NETTY_HOST));
+    config.setPort(_serverConf.getString(KEY_OF_BROKER_QUERY_PORT));
+    _helixManager.getHelixDataAccessor().setProperty(keyBuilder.instanceConfig(_instanceId), config);
+
     _helixAdmin = _helixManager.getClusterManagmentTool();
     addInstanceTagIfNeeded(helixClusterName, _instanceId);
     ZkHelixPropertyStore<ZNRecord> propertyStore = _helixManager.getHelixPropertyStore();
