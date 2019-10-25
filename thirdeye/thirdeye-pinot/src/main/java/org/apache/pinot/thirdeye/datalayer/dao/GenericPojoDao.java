@@ -43,6 +43,7 @@ import org.apache.pinot.thirdeye.datalayer.entity.DetectionAlertConfigIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.DetectionConfigIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.DetectionStatusIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.EntityToEntityMappingIndex;
+import org.apache.pinot.thirdeye.datalayer.entity.EvaluationIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.EventIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.GenericJsonEntity;
 import org.apache.pinot.thirdeye.datalayer.entity.GroupedAnomalyResultsIndex;
@@ -70,6 +71,7 @@ import org.apache.pinot.thirdeye.datalayer.pojo.DetectionAlertConfigBean;
 import org.apache.pinot.thirdeye.datalayer.pojo.DetectionConfigBean;
 import org.apache.pinot.thirdeye.datalayer.pojo.DetectionStatusBean;
 import org.apache.pinot.thirdeye.datalayer.pojo.EntityToEntityMappingBean;
+import org.apache.pinot.thirdeye.datalayer.pojo.EvaluationBean;
 import org.apache.pinot.thirdeye.datalayer.pojo.EventBean;
 import org.apache.pinot.thirdeye.datalayer.pojo.GroupedAnomalyResultsBean;
 import org.apache.pinot.thirdeye.datalayer.pojo.JobBean;
@@ -97,7 +99,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import javax.sql.DataSource;
-import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.collections4.CollectionUtils;
 import org.modelmapper.ModelMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -163,6 +165,8 @@ public class GenericPojoDao {
         newPojoInfo(DEFAULT_BASE_TABLE_NAME, DetectionConfigIndex.class));
     pojoInfoMap.put(DetectionAlertConfigBean.class,
         newPojoInfo(DEFAULT_BASE_TABLE_NAME, DetectionAlertConfigIndex.class));
+    pojoInfoMap.put(EvaluationBean.class,
+        newPojoInfo(DEFAULT_BASE_TABLE_NAME, EvaluationIndex.class));
   }
 
   private static PojoInfo newPojoInfo(String baseTableName,

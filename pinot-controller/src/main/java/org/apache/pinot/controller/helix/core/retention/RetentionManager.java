@@ -35,6 +35,7 @@ import org.apache.pinot.common.utils.CommonConstants;
 import org.apache.pinot.common.utils.CommonConstants.Segment.Realtime.Status;
 import org.apache.pinot.common.utils.SegmentName;
 import org.apache.pinot.controller.ControllerConf;
+import org.apache.pinot.controller.LeadControllerManager;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.helix.core.periodictask.ControllerPeriodicTask;
 import org.apache.pinot.controller.helix.core.retention.strategy.RetentionStrategy;
@@ -54,10 +55,11 @@ public class RetentionManager extends ControllerPeriodicTask<Void> {
 
   private final int _deletedSegmentsRetentionInDays;
 
-  public RetentionManager(PinotHelixResourceManager pinotHelixResourceManager, ControllerConf config,
-      ControllerMetrics controllerMetrics) {
+  public RetentionManager(PinotHelixResourceManager pinotHelixResourceManager,
+      LeadControllerManager leadControllerManager, ControllerConf config, ControllerMetrics controllerMetrics) {
     super("RetentionManager", config.getRetentionControllerFrequencyInSeconds(),
-        config.getRetentionManagerInitialDelayInSeconds(), pinotHelixResourceManager, controllerMetrics);
+        config.getRetentionManagerInitialDelayInSeconds(), pinotHelixResourceManager, leadControllerManager,
+        controllerMetrics);
     _deletedSegmentsRetentionInDays = config.getDeletedSegmentsRetentionInDays();
 
     LOGGER.info("Starting RetentionManager with runFrequencyInSeconds: {}, deletedSegmentsRetentionInDays: {}",
@@ -113,12 +115,12 @@ public class RetentionManager extends ControllerPeriodicTask<Void> {
     List<String> segmentsToDelete = new ArrayList<>();
     for (OfflineSegmentZKMetadata offlineSegmentZKMetadata : _pinotHelixResourceManager
         .getOfflineSegmentMetadata(offlineTableName)) {
-      if (retentionStrategy.isPurgeable(offlineSegmentZKMetadata)) {
+      if (retentionStrategy.isPurgeable(offlineTableName, offlineSegmentZKMetadata)) {
         segmentsToDelete.add(offlineSegmentZKMetadata.getSegmentName());
       }
     }
     if (!segmentsToDelete.isEmpty()) {
-      LOGGER.info("Deleting segments: {} from table: {}", segmentsToDelete, offlineTableName);
+      LOGGER.info("Deleting {} segments from table: {}", segmentsToDelete.size(), offlineTableName);
       _pinotHelixResourceManager.deleteSegments(offlineTableName, segmentsToDelete);
     }
   }
@@ -141,13 +143,13 @@ public class RetentionManager extends ControllerPeriodicTask<Void> {
         }
       } else {
         // Sealed segment
-        if (retentionStrategy.isPurgeable(realtimeSegmentZKMetadata)) {
+        if (retentionStrategy.isPurgeable(realtimeTableName, realtimeSegmentZKMetadata)) {
           segmentsToDelete.add(segmentName);
         }
       }
     }
     if (!segmentsToDelete.isEmpty()) {
-      LOGGER.info("Deleting segments: {} from table: {}", segmentsToDelete, realtimeTableName);
+      LOGGER.info("Deleting {} segments from table: {}", segmentsToDelete.size(), realtimeTableName);
       _pinotHelixResourceManager.deleteSegments(realtimeTableName, segmentsToDelete);
     }
   }

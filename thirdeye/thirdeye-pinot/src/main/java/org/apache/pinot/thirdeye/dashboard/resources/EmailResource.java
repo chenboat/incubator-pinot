@@ -20,7 +20,7 @@
 package org.apache.pinot.thirdeye.dashboard.resources;
 
 import com.google.common.base.Strings;
-import org.apache.pinot.thirdeye.anomaly.SmtpConfiguration;
+import org.apache.pinot.thirdeye.notification.commons.SmtpConfiguration;
 import org.apache.pinot.thirdeye.anomaly.ThirdEyeAnomalyConfiguration;
 import org.apache.pinot.thirdeye.anomaly.alert.util.AlertFilterHelper;
 import org.apache.pinot.thirdeye.anomaly.alert.util.AnomalyReportGenerator;
@@ -39,8 +39,8 @@ import org.apache.pinot.thirdeye.datalayer.util.Predicate;
 import org.apache.pinot.thirdeye.datasource.DAORegistry;
 import org.apache.pinot.thirdeye.detection.alert.DetectionAlertFilterRecipients;
 import org.apache.pinot.thirdeye.detector.email.filter.AlertFilterFactory;
-import com.wordnik.swagger.annotations.ApiOperation;
-import org.apache.commons.lang.StringUtils;
+import io.swagger.annotations.ApiOperation;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.mail.EmailException;
 import org.apache.commons.mail.HtmlEmail;
 import org.quartz.CronExpression;
@@ -53,7 +53,7 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.util.*;
 
-import static org.apache.pinot.thirdeye.anomaly.SmtpConfiguration.*;
+import static org.apache.pinot.thirdeye.notification.commons.SmtpConfiguration.*;
 
 
 @Path("thirdeye/email")

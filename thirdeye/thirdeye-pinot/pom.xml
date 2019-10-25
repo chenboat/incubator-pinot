@@ -31,15 +31,15 @@
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
-      <artifactId>commons-lang3</artifactId>
-    </dependency>
-    <dependency> <!-- added because it was removed during a dropwizard version bump -->
-      <groupId>commons-lang</groupId>
-      <artifactId>commons-lang</artifactId>
+      <artifactId>commons-dbcp2</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
-      <artifactId>commons-dbcp2</artifactId>
+      <artifactId>commons-configuration2</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-collections4</artifactId>
     </dependency>
     <dependency>
       <groupId>io.dropwizard</groupId>
@@ -75,6 +75,8 @@
       <groupId>io.dropwizard-bundles</groupId>
       <artifactId>dropwizard-redirect-bundle</artifactId>
     </dependency>
+
+    <!-- Pin jackson version and omit from third party dependencies-->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-core</artifactId>
@@ -83,6 +85,11 @@
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
     </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-annotations</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>org.apache.pinot</groupId>
       <artifactId>pinot-api</artifactId>
@@ -113,6 +120,14 @@
           <groupId>org.slf4j</groupId>
           <artifactId>slf4j-log4j12</artifactId>
         </exclusion>
+        <exclusion>
+          <groupId>commons-lang</groupId>
+          <artifactId>commons-lang</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>commons-configuration</groupId>
+          <artifactId>commons-configuration</artifactId>
+        </exclusion>
       </exclusions>
     </dependency>
     <dependency>
@@ -126,6 +141,7 @@
     <dependency>
       <groupId>org.eclipse.jetty</groupId>
       <artifactId>jetty-proxy</artifactId>
+      <version>${jetty.version}</version>
     </dependency>
     <dependency>
       <groupId>org.reflections</groupId>
@@ -135,6 +151,11 @@
       <!-- TODO: replace code dependencies and remove -->
       <groupId>org.json</groupId>
       <artifactId>json</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.facebook.presto</groupId>
+      <artifactId>presto-jdbc</artifactId>
+      <version>0.215</version>
     </dependency>
 
     <!-- dataframe specific -->
@@ -178,6 +199,12 @@
     <dependency>
       <groupId>com.github.jknack</groupId>
       <artifactId>handlebars</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.commons</groupId>
+          <artifactId>commons-lang3</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>com.github.jknack</groupId>
@@ -248,8 +275,12 @@
 
     <!-- Swagger -->
     <dependency>
-      <groupId>io.federecio</groupId>
+      <groupId>com.smoketurner</groupId>
       <artifactId>dropwizard-swagger</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.swagger</groupId>
+      <artifactId>swagger-annotations</artifactId>
     </dependency>
     <dependency>
       <groupId>javassist</groupId>
@@ -265,6 +296,39 @@
       <groupId>com.ibm.icu</groupId>
       <artifactId>icu4j</artifactId>
       <version>62.1</version>
+    </dependency>
+
+    <!-- Subscription/Notification dependencies -->
+    <!-- https://mvnrepository.com/artifact/com.atlassian.jira/jira-rest-java-client-api -->
+    <dependency>
+      <groupId>com.atlassian.jira</groupId>
+      <artifactId>jira-rest-java-client-core</artifactId>
+      <version>2.0.0-m30</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.sun.jersey</groupId>
+          <artifactId>jersey-client</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.sun.jersey</groupId>
+          <artifactId>jersey-json</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.codehaus.jettison</groupId>
+      <artifactId>jettison</artifactId>
+      <version>1.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.atlassian.jira</groupId>
+      <artifactId>jira-rest-java-client-plugin</artifactId>
+      <version>2.0.0-m30</version>
+    </dependency>
+    <dependency>
+      <groupId>com.atlassian.jira</groupId>
+      <artifactId>jira-rest-java-client-api</artifactId>
+      <version>2.0.0-m30</version>
     </dependency>
   </dependencies>
 

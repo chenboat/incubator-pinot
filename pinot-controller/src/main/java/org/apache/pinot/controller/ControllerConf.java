@@ -19,10 +19,6 @@
 package org.apache.pinot.controller;
 
 import java.io.File;
-import java.io.UnsupportedEncodingException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -30,12 +26,13 @@ import org.apache.commons.configuration.Configuration;
 import org.apache.commons.configuration.ConfigurationException;
 import org.apache.commons.configuration.PropertiesConfiguration;
 import org.apache.pinot.common.protocols.SegmentCompletionProtocol;
-import org.apache.pinot.common.utils.CommonConstants;
 import org.apache.pinot.common.utils.StringUtil;
-import org.apache.pinot.controller.helix.core.util.HelixSetupUtils;
 import org.apache.pinot.filesystem.LocalPinotFS;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.pinot.common.utils.CommonConstants.Controller.CONFIG_OF_CONTROLLER_METRICS_PREFIX;
+import static org.apache.pinot.common.utils.CommonConstants.Controller.DEFAULT_METRICS_PREFIX;
 
 
 public class ControllerConf extends PropertiesConfiguration {
@@ -60,9 +57,7 @@ public class ControllerConf extends PropertiesConfiguration {
   private static final String CONTROLLER_MODE = "controller.mode";
 
   public enum ControllerMode {
-    DUAL,
-    PINOT_ONLY,
-    HELIX_ONLY
+    DUAL, PINOT_ONLY, HELIX_ONLY
   }
 
   public static class ControllerPeriodicTasksConf {
@@ -78,6 +73,8 @@ public class ControllerConf extends PropertiesConfiguration {
         "controller.realtime.segment.validation.frequencyInSeconds";
     private static final String BROKER_RESOURCE_VALIDATION_FREQUENCY_IN_SECONDS =
         "controller.broker.resource.validation.frequencyInSeconds";
+    private static final String BROKER_RESOURCE_VALIDATION_INITIAL_DELAY_IN_SECONDS =
+        "controller.broker.resource.validation.initialDelayInSeconds";
     private static final String STATUS_CHECKER_FREQUENCY_IN_SECONDS = "controller.statuschecker.frequencyInSeconds";
     private static final String STATUS_CHECKER_WAIT_FOR_PUSH_TIME_IN_SECONDS =
         "controller.statuschecker.waitForPushTimeInSeconds";
@@ -96,6 +93,8 @@ public class ControllerConf extends PropertiesConfiguration {
         "controller.retentionManager.initialDelayInSeconds";
     private static final String OFFLINE_SEGMENT_INTERVAL_CHECKER_INITIAL_DELAY_IN_SECONDS =
         "controller.offlineSegmentIntervalChecker.initialDelayInSeconds";
+    private static final String REALTIME_SEGMENT_RELOCATION_INITIAL_DELAY_IN_SECONDS =
+        "controller.realtimeSegmentRelocation.initialDelayInSeconds";
 
     public static final int MIN_INITIAL_DELAY_IN_SECONDS = 120;
     public static final int MAX_INITIAL_DELAY_IN_SECONDS = 300;
@@ -132,8 +131,11 @@ public class ControllerConf extends PropertiesConfiguration {
   private static final String REALTIME_SEGMENT_METADATA_COMMIT_NUMLOCKS =
       "controller.realtime.segment.metadata.commit.numLocks";
   private static final String ENABLE_STORAGE_QUOTA_CHECK = "controller.enable.storage.quota.check";
-
   private static final String ENABLE_BATCH_MESSAGE_MODE = "controller.enable.batch.message.mode";
+  // It is used to disable the HLC realtime segment completion and disallow HLC table in the cluster. True by default.
+  // If it's set to false, existing HLC realtime tables will stop consumption, and creation of new HLC tables will be disallowed.
+  // Please make sure there is no HLC table running in the cluster before disallowing it.
+  private static final String ALLOW_HLC_TABLES = "controller.allow.hlc.tables";
 
   // Defines the kind of storage and the underlying PinotFS implementation
   private static final String PINOT_FS_FACTORY_CLASS_PREFIX = "controller.storage.factory.class";
@@ -151,6 +153,7 @@ public class ControllerConf extends PropertiesConfiguration {
   private static final int DEFAULT_REALTIME_SEGMENT_METADATA_COMMIT_NUMLOCKS = 64;
   private static final boolean DEFAULT_ENABLE_STORAGE_QUOTA_CHECK = true;
   private static final boolean DEFAULT_ENABLE_BATCH_MESSAGE_MODE = false;
+  private static final boolean DEFAULT_ALLOW_HLC_TABLES = true;
   private static final String DEFAULT_CONTROLLER_MODE = ControllerMode.DUAL.name();
 
   private static final String DEFAULT_PINOT_FS_FACTORY_CLASS_LOCAL = LocalPinotFS.class.getName();
@@ -162,43 +165,6 @@ public class ControllerConf extends PropertiesConfiguration {
 
   public ControllerConf() {
     super();
-  }
-
-  /**
-   * Returns the URI for the given path, appends the local (file) scheme to the URI if no scheme exists.
-   */
-  public static URI getUriFromPath(String path) {
-    try {
-      URI uri = new URI(path);
-      if (uri.getScheme() != null) {
-        return uri;
-      } else {
-        return new URI(CommonConstants.Segment.LOCAL_SEGMENT_SCHEME, path, null);
-      }
-    } catch (URISyntaxException e) {
-      LOGGER.error("Could not construct uri from path {}", path);
-      throw new RuntimeException(e);
-    }
-  }
-
-  public static URI constructSegmentLocation(String baseDataDir, String tableName, String segmentName) {
-    try {
-      return getUriFromPath(StringUtil.join(File.separator, baseDataDir, tableName, URLEncoder.encode(segmentName, "UTF-8")));
-    } catch (UnsupportedEncodingException e) {
-      LOGGER
-          .error("Could not construct segment location with baseDataDir {}, tableName {}, segmentName {}", baseDataDir,
-              tableName, segmentName);
-      throw new RuntimeException(e);
-    }
-  }
-
-  public static String constructDownloadUrl(String tableName, String segmentName, String vip) {
-    try {
-      return StringUtil.join("/", vip, "segments", tableName, URLEncoder.encode(segmentName, "UTF-8"));
-    } catch (UnsupportedEncodingException e) {
-      // Shouldn't happen
-      throw new AssertionError("Encountered error while encoding in UTF-8 format", e);
-    }
   }
 
   public void setLocalTempDir(String localTempDir) {
@@ -451,6 +417,11 @@ public class ControllerConf extends PropertiesConfiguration {
         Integer.toString(validationFrequencyInSeconds));
   }
 
+  public long getBrokerResourceValidationInitialDelayInSeconds() {
+    return getLong(ControllerPeriodicTasksConf.BROKER_RESOURCE_VALIDATION_INITIAL_DELAY_IN_SECONDS,
+        getPeriodicTaskInitialDelayInSeconds());
+  }
+
   public int getStatusCheckerFrequencyInSeconds() {
     if (containsKey(ControllerPeriodicTasksConf.STATUS_CHECKER_FREQUENCY_IN_SECONDS)) {
       return Integer.parseInt((String) getProperty(ControllerPeriodicTasksConf.STATUS_CHECKER_FREQUENCY_IN_SECONDS));
@@ -593,13 +564,22 @@ public class ControllerConf extends PropertiesConfiguration {
         ControllerPeriodicTasksConf.getRandomInitialDelayInSeconds());
   }
 
+  public long getRealtimeSegmentRelocationInitialDelayInSeconds() {
+    return getLong(ControllerPeriodicTasksConf.REALTIME_SEGMENT_RELOCATION_INITIAL_DELAY_IN_SECONDS,
+        ControllerPeriodicTasksConf.getRandomInitialDelayInSeconds());
+  }
+
   public long getOfflineSegmentIntervalCheckerInitialDelayInSeconds() {
     return getLong(ControllerPeriodicTasksConf.OFFLINE_SEGMENT_INTERVAL_CHECKER_INITIAL_DELAY_IN_SECONDS,
         ControllerPeriodicTasksConf.getRandomInitialDelayInSeconds());
   }
 
-  public void setStatusCheckerInitialDelayInSeconds(long initialDelayInSeconds) {
-    setProperty(ControllerPeriodicTasksConf.STATUS_CHECKER_INITIAL_DELAY_IN_SECONDS, initialDelayInSeconds);
+  public long getRealtimeSegmentValidationManagerInitialDelaySeconds() {
+    return getPeriodicTaskInitialDelayInSeconds();
+  }
+
+  public long getPinotTaskManagerInitialDelaySeconds() {
+    return getPeriodicTaskInitialDelayInSeconds();
   }
 
   public long getPeriodicTaskInitialDelayInSeconds() {
@@ -612,5 +592,17 @@ public class ControllerConf extends PropertiesConfiguration {
 
   public ControllerMode getControllerMode() {
     return ControllerMode.valueOf(getString(CONTROLLER_MODE, DEFAULT_CONTROLLER_MODE).toUpperCase());
+  }
+
+  public boolean getHLCTablesAllowed() {
+    return getBoolean(ALLOW_HLC_TABLES, DEFAULT_ALLOW_HLC_TABLES);
+  }
+
+  public void setHLCTablesAllowed(boolean allowHLCTables) {
+    setProperty(ALLOW_HLC_TABLES, allowHLCTables);
+  }
+
+  public String getMetricsPrefix() {
+    return getString(CONFIG_OF_CONTROLLER_METRICS_PREFIX, DEFAULT_METRICS_PREFIX);
   }
 }

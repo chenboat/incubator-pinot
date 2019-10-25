@@ -32,23 +32,23 @@ import org.apache.pinot.common.data.TimeGranularitySpec.TimeFormat;
  * Segment name generator that normalizes the date to human readable format.
  */
 public class NormalizedDateSegmentNameGenerator implements SegmentNameGenerator {
-  private final String _segmentNamePrefix;
-  private final boolean _appendPushType;
-  private final boolean _excludeSequenceId;
+  private String _segmentNamePrefix;
+  private boolean _excludeSequenceId;
+  private boolean _appendPushType;
 
   // For APPEND tables
-  private final SimpleDateFormat _outputSDF;
+  private SimpleDateFormat _outputSDF;
   // For EPOCH time format
-  private final TimeUnit _inputTimeUnit;
+  private TimeUnit _inputTimeUnit;
   // For SIMPLE_DATE_FORMAT time format
-  private final SimpleDateFormat _inputSDF;
+  private SimpleDateFormat _inputSDF;
 
   public NormalizedDateSegmentNameGenerator(String tableName, @Nullable String segmentNamePrefix,
-      @Nullable String excludeSequenceId, @Nullable String pushType, @Nullable String pushFrequency,
-      @Nullable String timeType, @Nullable String timeFormat) {
+      boolean excludeSequenceId, @Nullable String pushType, @Nullable String pushFrequency, @Nullable TimeUnit timeType,
+      @Nullable String timeFormat) {
     _segmentNamePrefix = segmentNamePrefix != null ? segmentNamePrefix.trim() : tableName;
+    _excludeSequenceId = excludeSequenceId;
     _appendPushType = "APPEND".equalsIgnoreCase(pushType);
-    _excludeSequenceId = Boolean.parseBoolean(excludeSequenceId);
 
     // Include time info for APPEND push type
     if (_appendPushType) {
@@ -62,7 +62,7 @@ public class NormalizedDateSegmentNameGenerator implements SegmentNameGenerator 
 
       // Parse input time format: 'EPOCH' or 'SIMPLE_DATE_FORMAT:<pattern>'
       if (Preconditions.checkNotNull(timeFormat).equals(TimeFormat.EPOCH.toString())) {
-        _inputTimeUnit = TimeUnit.valueOf(timeType);
+        _inputTimeUnit = timeType;
         _inputSDF = null;
       } else {
         Preconditions.checkArgument(timeFormat.startsWith(TimeFormat.SIMPLE_DATE_FORMAT.toString()),
@@ -82,11 +82,13 @@ public class NormalizedDateSegmentNameGenerator implements SegmentNameGenerator 
   @Override
   public String generateSegmentName(int sequenceId, @Nullable Object minTimeValue, @Nullable Object maxTimeValue) {
     Integer sequenceIdInSegmentName = !_excludeSequenceId && sequenceId >= 0 ? sequenceId : null;
-    if (!_appendPushType) {
-      return JOINER.join(_segmentNamePrefix, sequenceIdInSegmentName);
-    } else {
+
+    // Include time value for APPEND push type
+    if (_appendPushType) {
       return JOINER.join(_segmentNamePrefix, getNormalizedDate(Preconditions.checkNotNull(minTimeValue)),
           getNormalizedDate(Preconditions.checkNotNull(maxTimeValue)), sequenceIdInSegmentName);
+    } else {
+      return JOINER.join(_segmentNamePrefix, sequenceIdInSegmentName);
     }
   }
 
@@ -96,7 +98,7 @@ public class NormalizedDateSegmentNameGenerator implements SegmentNameGenerator 
    * @param timeValue Time value
    * @return Normalized date string
    */
-  private String getNormalizedDate(Object timeValue) {
+  public String getNormalizedDate(Object timeValue) {
     if (_inputTimeUnit != null) {
       return _outputSDF.format(new Date(_inputTimeUnit.toMillis(Long.parseLong(timeValue.toString()))));
     } else {

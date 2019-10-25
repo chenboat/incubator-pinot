@@ -16,18 +16,25 @@ export default Route.extend(ApplicationRouteMixin, {
   session: service(),
   notifications: service('toast'),
   queryParams: {
-    debug: queryParamsConfig,
+    debug: queryParamsConfig
   },
-  
-  beforeModel() {
+
+  beforeModel(transition) {
     // calling this._super to trigger ember-simple-auth's hook
     this._super(...arguments);
+
+    // if configured as https only, redirect http to https, unless in debug mode
+    const debug = transition.queryParams.debug || '';
+    if (config.https_only && location.protocol === 'http:' && debug != 'show') {
+      location.href = 'https:' + window.location.href.substring(window.location.protocol.length);
+    }
 
     // invalidates session if cookie expired
     if (this.get('session.isAuthenticated')) {
       fetch('/auth')
         .then(checkStatus)
         .catch(() => {
+          this.get('session').set('data.previousTransition', transition.intent.url);
           this.get('session').invalidate();
         });
     }

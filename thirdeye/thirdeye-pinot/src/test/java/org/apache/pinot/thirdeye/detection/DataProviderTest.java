@@ -25,6 +25,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -33,10 +34,13 @@ import org.apache.pinot.thirdeye.common.dimension.DimensionMap;
 import org.apache.pinot.thirdeye.dataframe.DataFrame;
 import org.apache.pinot.thirdeye.datalayer.bao.DAOTestBase;
 import org.apache.pinot.thirdeye.datalayer.bao.DatasetConfigManager;
+import org.apache.pinot.thirdeye.datalayer.bao.DetectionConfigManager;
+import org.apache.pinot.thirdeye.datalayer.bao.EvaluationManager;
 import org.apache.pinot.thirdeye.datalayer.bao.EventManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MergedAnomalyResultManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MetricConfigManager;
 import org.apache.pinot.thirdeye.datalayer.dto.DatasetConfigDTO;
+import org.apache.pinot.thirdeye.datalayer.dto.DetectionConfigDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.EventDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MetricConfigDTO;
@@ -58,13 +62,14 @@ import static org.apache.pinot.thirdeye.dataframe.util.DataFrameUtils.*;
 
 
 public class DataProviderTest {
-  private static final double EPSILON_MEAN = 20.0;
 
   private DAOTestBase testBase;
   private EventManager eventDAO;
   private MergedAnomalyResultManager anomalyDAO;
   private MetricConfigManager metricDAO;
   private DatasetConfigManager datasetDAO;
+  private EvaluationManager evaluationDAO;
+  private DetectionConfigManager detectionDAO;
   private QueryCache cache;
   private TimeSeriesLoader timeseriesLoader;
 
@@ -76,6 +81,7 @@ public class DataProviderTest {
   private List<Long> anomalyIds;
   private List<Long> metricIds;
   private List<Long> datasetIds;
+  private List<Long> detectionIds;
 
   @BeforeMethod
   public void beforeMethod() throws Exception {
@@ -86,7 +92,8 @@ public class DataProviderTest {
     this.anomalyDAO = reg.getMergedAnomalyResultDAO();
     this.metricDAO = reg.getMetricConfigDAO();
     this.datasetDAO = reg.getDatasetConfigDAO();
-
+    this.evaluationDAO = reg.getEvaluationManager();
+    this.detectionDAO = reg.getDetectionConfigManager();
     // events
     this.eventIds = new ArrayList<>();
     this.eventIds.add(this.eventDAO.save(makeEvent(3600000L, 7200000L)));
@@ -95,12 +102,22 @@ public class DataProviderTest {
     this.eventIds.add(this.eventDAO.save(makeEvent(604800000L, 1209600000L, Arrays.asList("b=2", "c=3"))));
     this.eventIds.add(this.eventDAO.save(makeEvent(1209800000L, 1210600000L, Collections.singleton("b=4"))));
 
+    // detections
+    this.detectionIds = new ArrayList<>();
+    DetectionConfigDTO detectionConfig = new DetectionConfigDTO();
+    detectionConfig.setName("test_detection_1");
+    detectionConfig.setDescription("test_description_1");
+    this.detectionIds.add(this.detectionDAO.save(detectionConfig));
+    detectionConfig.setName("test_detection_2");
+    detectionConfig.setDescription("test_description_2");
+    this.detectionIds.add(this.detectionDAO.save(detectionConfig));
+
     // anomalies
     this.anomalyIds = new ArrayList<>();
-    this.anomalyIds.add(this.anomalyDAO.save(makeAnomaly(null, 100L, 4000000L, 8000000L, Arrays.asList("a=1", "c=3", "b=2"))));
-    this.anomalyIds.add(this.anomalyDAO.save(makeAnomaly(null, 100L, 8000000L, 12000000L, Arrays.asList("a=1", "c=4"))));
-    this.anomalyIds.add(this.anomalyDAO.save(makeAnomaly(null, 200L, 604800000L, 1209600000L, Collections.<String>emptyList())));
-    this.anomalyIds.add(this.anomalyDAO.save(makeAnomaly(null, 200L, 14400000L, 18000000L, Arrays.asList("a=1", "c=3"))));
+    this.anomalyIds.add(this.anomalyDAO.save(makeAnomaly(null, detectionIds.get(0), 4000000L, 8000000L, Arrays.asList("a=1", "c=3", "b=2"))));
+    this.anomalyIds.add(this.anomalyDAO.save(makeAnomaly(null, detectionIds.get(0), 8000000L, 12000000L, Arrays.asList("a=1", "c=4"))));
+    this.anomalyIds.add(this.anomalyDAO.save(makeAnomaly(null, detectionIds.get(1), 604800000L, 1209600000L, Collections.<String>emptyList())));
+    this.anomalyIds.add(this.anomalyDAO.save(makeAnomaly(null, detectionIds.get(1), 14400000L, 18000000L, Arrays.asList("a=1", "c=3"))));
 
     // metrics
     this.metricIds = new ArrayList<>();
@@ -140,7 +157,7 @@ public class DataProviderTest {
     this.timeseriesLoader = new DefaultTimeSeriesLoader(this.metricDAO, this.datasetDAO, this.cache);
 
     // provider
-    this.provider = new DefaultDataProvider(this.metricDAO, this.datasetDAO, this.eventDAO, this.anomalyDAO,
+    this.provider = new DefaultDataProvider(this.metricDAO, this.datasetDAO, this.eventDAO, this.anomalyDAO, this.evaluationDAO,
         this.timeseriesLoader, null, null);
   }
 
@@ -248,7 +265,7 @@ public class DataProviderTest {
     Collection<MergedAnomalyResultDTO> anomalies = this.provider.fetchAnomalies(Collections.singleton(slice), -1).get(slice);
 
     Assert.assertEquals(anomalies.size(), 1);
-    Assert.assertTrue(anomalies.contains(makeAnomaly(this.anomalyIds.get(2), 200L, 604800000L, 1209600000L, Collections.<String>emptyList())));
+    Assert.assertTrue(anomalies.contains(makeAnomaly(this.anomalyIds.get(2), detectionIds.get(1), 604800000L, 1209600000L, Collections.<String>emptyList())));
   }
 
   @Test
@@ -258,9 +275,9 @@ public class DataProviderTest {
     Collection<MergedAnomalyResultDTO> anomalies = this.provider.fetchAnomalies(Collections.singleton(slice), -1).get(slice);
 
     Assert.assertEquals(anomalies.size(), 3);
-    Assert.assertTrue(anomalies.contains(makeAnomaly(this.anomalyIds.get(0), 100L, 4000000L, 8000000L, Arrays.asList("a=1", "c=3", "b=2"))));
-    Assert.assertTrue(anomalies.contains(makeAnomaly(this.anomalyIds.get(2), 200L, 604800000L, 1209600000L, Collections.<String>emptyList())));
-    Assert.assertTrue(anomalies.contains(makeAnomaly(this.anomalyIds.get(3), 200L, 14400000L, 18000000L, Arrays.asList("a=1", "c=3"))));
+    Assert.assertTrue(anomalies.contains(makeAnomaly(this.anomalyIds.get(0), detectionIds.get(0), 4000000L, 8000000L, Arrays.asList("a=1", "c=3", "b=2"))));
+    Assert.assertTrue(anomalies.contains(makeAnomaly(this.anomalyIds.get(2), detectionIds.get(1), 604800000L, 1209600000L, Collections.<String>emptyList())));
+    Assert.assertTrue(anomalies.contains(makeAnomaly(this.anomalyIds.get(3), detectionIds.get(1), 14400000L, 18000000L, Arrays.asList("a=1", "c=3"))));
   }
 
   //
@@ -273,6 +290,7 @@ public class DataProviderTest {
     anomaly.setStartTime(start);
     anomaly.setEndTime(end);
     anomaly.setId(id);
+    anomaly.setChildIds(new HashSet<>());
 
     DimensionMap filters = new DimensionMap();
     for (String fs : filterStrings) {
@@ -328,7 +346,7 @@ public class DataProviderTest {
       String[] parts = fs.split("=");
       filters.put(parts[0], parts[1]);
     }
-    return new AnomalySlice(start, end, filters);
+    return new AnomalySlice().withStart(start).withEnd(end).withFilters(filters).withDetectionCompNames(null);
   }
 
   private static MetricConfigDTO makeMetric(Long id, String metric, String dataset) {

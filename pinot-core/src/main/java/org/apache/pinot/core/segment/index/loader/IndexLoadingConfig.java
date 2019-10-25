@@ -46,12 +46,11 @@ public class IndexLoadingConfig {
   private Set<String> _invertedIndexColumns = new HashSet<>();
   private Set<String> _noDictionaryColumns = new HashSet<>(); // TODO: replace this by _noDictionaryConfig.
   private Map<String, String> _noDictionaryConfig = new HashMap<>();
+  private Set<String> _varLengthDictionaryColumns = new HashSet<>();
   private Set<String> _onHeapDictionaryColumns = new HashSet<>();
   private Set<String> _bloomFilterColumns = new HashSet<>();
 
   private SegmentVersion _segmentVersion;
-  // This value will remain true only when the empty constructor is invoked.
-  private boolean _enableDefaultColumns = true;
   private ColumnMinMaxValueGeneratorMode _columnMinMaxValueGeneratorMode = ColumnMinMaxValueGeneratorMode.DEFAULT_MODE;
   private int _realtimeAvgMultiValueCount = DEFAULT_REALTIME_AVG_MULTI_VALUE_COUNT;
   private boolean _enableSplitCommit;
@@ -97,6 +96,11 @@ public class IndexLoadingConfig {
       _noDictionaryConfig.putAll(noDictionaryConfig);
     }
 
+    List<String> varLengthDictionaryColumns = indexingConfig.getVarLengthDictionaryColumns();
+    if (varLengthDictionaryColumns != null) {
+      _varLengthDictionaryColumns.addAll(varLengthDictionaryColumns);
+    }
+
     List<String> onHeapDictionaryColumns = indexingConfig.getOnHeapDictionaryColumns();
     if (onHeapDictionaryColumns != null) {
       _onHeapDictionaryColumns.addAll(onHeapDictionaryColumns);
@@ -124,8 +128,6 @@ public class IndexLoadingConfig {
     if (instanceSegmentVersion != null) {
       _segmentVersion = SegmentVersion.valueOf(instanceSegmentVersion.toLowerCase());
     }
-
-    _enableDefaultColumns = instanceDataManagerConfig.isEnableDefaultColumns();
 
     _enableSplitCommit = instanceDataManagerConfig.isEnableSplitCommit();
 
@@ -196,6 +198,11 @@ public class IndexLoadingConfig {
   }
 
   @Nonnull
+  public Set<String> getVarLengthDictionaryColumns() {
+    return _varLengthDictionaryColumns;
+  }
+
+  @Nonnull
   public Set<String> getOnHeapDictionaryColumns() {
     return _onHeapDictionaryColumns;
   }
@@ -216,15 +223,13 @@ public class IndexLoadingConfig {
     _segmentVersion = segmentVersion;
   }
 
-  public boolean isEnableDefaultColumns() {
-    return _enableDefaultColumns;
-  }
-
   public boolean isEnableSplitCommit() {
     return _enableSplitCommit;
   }
 
-  public boolean isEnableSplitCommitEndWithMetadata() { return _enableSplitCommitEndWithMetadata; }
+  public boolean isEnableSplitCommitEndWithMetadata() {
+    return _enableSplitCommitEndWithMetadata;
+  }
 
   public boolean isRealtimeOffheapAllocation() {
     return _isRealtimeOffheapAllocation;

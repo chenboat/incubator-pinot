@@ -22,14 +22,14 @@ import java.util.HashSet;
 import java.util.Set;
 import org.apache.pinot.common.config.ColumnPartitionConfig;
 import org.apache.pinot.common.data.FieldSpec;
-import org.apache.pinot.common.utils.primitive.ByteArray;
 import org.apache.pinot.core.common.Block;
+import org.apache.pinot.core.common.BlockMetadata;
 import org.apache.pinot.core.common.BlockMultiValIterator;
 import org.apache.pinot.core.data.partition.PartitionFunction;
 import org.apache.pinot.core.data.partition.PartitionFunctionFactory;
 import org.apache.pinot.core.io.reader.SingleColumnSingleValueReader;
 import org.apache.pinot.core.operator.blocks.SingleValueBlock;
-import org.apache.pinot.core.realtime.impl.dictionary.MutableDictionary;
+import org.apache.pinot.core.realtime.impl.dictionary.BaseMutableDictionary;
 import org.apache.pinot.core.segment.creator.ColumnStatistics;
 import org.apache.pinot.core.segment.index.data.source.ColumnDataSource;
 
@@ -41,7 +41,7 @@ public class RealtimeColumnStatistics implements ColumnStatistics {
 
   private final ColumnDataSource _dataSource;
   private final int[] _sortedDocIdIterationOrder;
-  private final MutableDictionary _dictionaryReader;
+  private final BaseMutableDictionary _dictionaryReader;
   private final Block _block;
   private PartitionFunction _partitionFunction;
   private int _numPartitions;
@@ -51,7 +51,7 @@ public class RealtimeColumnStatistics implements ColumnStatistics {
       ColumnPartitionConfig columnPartitionConfig) {
     _dataSource = dataSource;
     _sortedDocIdIterationOrder = sortedDocIdIterationOrder;
-    _dictionaryReader = (MutableDictionary) dataSource.getDictionary();
+    _dictionaryReader = (BaseMutableDictionary) dataSource.getDictionary();
     _block = dataSource.nextBlock();
     if (columnPartitionConfig != null) {
       String functionName = columnPartitionConfig.getFunctionName();
@@ -135,40 +135,41 @@ public class RealtimeColumnStatistics implements ColumnStatistics {
 
   @Override
   public boolean isSorted() {
-    // Multivalue columns can't be in sorted order
-    if (!_block.getMetadata().isSingleValue()) {
+    BlockMetadata blockMetadata = _block.getMetadata();
+
+    // Multi-valued column cannot be sorted
+    if (!blockMetadata.isSingleValue()) {
       return false;
     }
 
-    // If this is a single value, then by definition the data is sorted
-    final int blockLength = _block.getMetadata().getLength();
-    if (blockLength <= 1 || getCardinality() <= 1) {
+    // If there is only one distinct value, then it is sorted
+    if (getCardinality() == 1) {
       return true;
     }
 
     // Iterate over all data to figure out whether or not it's in sorted order
     SingleColumnSingleValueReader singleValueReader = ((SingleValueBlock) _block).getReader();
 
-    int docIdIndex = _sortedDocIdIterationOrder != null ? _sortedDocIdIterationOrder[0] : 0;
-    int dictionaryId = singleValueReader.getInt(docIdIndex);
-    Object previousValue = _dictionaryReader.get(dictionaryId);
-    for (int i = 1; i < blockLength; i++) {
-      docIdIndex = _sortedDocIdIterationOrder != null ? _sortedDocIdIterationOrder[i] : i;
-      dictionaryId = singleValueReader.getInt(docIdIndex);
-      Object currentValue = _dictionaryReader.get(dictionaryId);
-      // If previousValue is greater than currentValue
-      switch (_block.getMetadata().getDataType().getStoredType()) {
-        case BYTES:
-          if (0 < ByteArray.compare((byte[]) previousValue, (byte[]) currentValue)) {
-            return false;
-          }
-          break;
-        default:
-          if (0 < ((Comparable) previousValue).compareTo(currentValue)) {
-            return false;
-          }
+    int numDocs = blockMetadata.getLength();
+    // Iterate with the sorted order if provided
+    if (_sortedDocIdIterationOrder != null) {
+      int previousDictId = singleValueReader.getInt(_sortedDocIdIterationOrder[0]);
+      for (int i = 1; i < numDocs; i++) {
+        int currentDictId = singleValueReader.getInt(_sortedDocIdIterationOrder[i]);
+        if (_dictionaryReader.compare(previousDictId, currentDictId) > 0) {
+          return false;
+        }
+        previousDictId = currentDictId;
       }
-      previousValue = currentValue;
+    } else {
+      int previousDictId = singleValueReader.getInt(0);
+      for (int i = 1; i < numDocs; i++) {
+        int currentDictId = singleValueReader.getInt(i);
+        if (_dictionaryReader.compare(previousDictId, currentDictId) > 0) {
+          return false;
+        }
+        previousDictId = currentDictId;
+      }
     }
 
     return true;

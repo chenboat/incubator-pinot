@@ -49,7 +49,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import org.apache.commons.collections.MapUtils;
+import org.apache.commons.collections4.MapUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,7 +66,7 @@ import org.slf4j.LoggerFactory;
 public class MetricAnalysisPipeline extends Pipeline {
   private static final Logger LOG = LoggerFactory.getLogger(MetricAnalysisPipeline.class);
 
-  private static final long TIMEOUT = 60000;
+  private static final long TIMEOUT = 1200000;
 
   private static final long TRAINING_OFFSET = TimeUnit.DAYS.toMillis(7);
 

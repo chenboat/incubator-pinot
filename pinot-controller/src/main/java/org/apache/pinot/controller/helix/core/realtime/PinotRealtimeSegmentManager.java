@@ -52,8 +52,7 @@ import org.apache.pinot.common.utils.HLCSegmentName;
 import org.apache.pinot.common.utils.SegmentName;
 import org.apache.pinot.common.utils.helix.HelixHelper;
 import org.apache.pinot.common.utils.retry.RetryPolicies;
-import org.apache.pinot.controller.ControllerLeadershipManager;
-import org.apache.pinot.controller.LeadershipChangeSubscriber;
+import org.apache.pinot.controller.LeadControllerManager;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.helix.core.PinotTableIdealStateBuilder;
 import org.apache.pinot.core.query.utils.Pair;
@@ -66,7 +65,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Realtime segment manager, which assigns realtime segments to server instances so that they can consume from the stream.
  */
-public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkChildListener, IZkDataListener, LeadershipChangeSubscriber {
+public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkChildListener, IZkDataListener {
   private static final Logger LOGGER = LoggerFactory.getLogger(PinotRealtimeSegmentManager.class);
   private static final String TABLE_CONFIG = "/CONFIGS/TABLE";
   private static final String SEGMENTS_PATH = "/SEGMENTS";
@@ -80,9 +79,12 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
   private final PinotHelixResourceManager _pinotHelixResourceManager;
   private ZkClient _zkClient;
   private ControllerMetrics _controllerMetrics;
+  private final LeadControllerManager _leadControllerManager;
 
-  public PinotRealtimeSegmentManager(PinotHelixResourceManager pinotManager) {
+  public PinotRealtimeSegmentManager(PinotHelixResourceManager pinotManager,
+      LeadControllerManager leadControllerManager) {
     _pinotHelixResourceManager = pinotManager;
+    _leadControllerManager = leadControllerManager;
     String clusterName = _pinotHelixResourceManager.getHelixClusterName();
     _propertyStorePath = PropertyPathConfig.getPath(PropertyType.PROPERTYSTORE, clusterName);
     _tableConfigPath = _propertyStorePath + TABLE_CONFIG;
@@ -100,9 +102,6 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
     // Subscribe to any data/child changes to property
     _zkClient.subscribeChildChanges(_tableConfigPath, this);
     _zkClient.subscribeDataChanges(_tableConfigPath, this);
-
-    // Subscribe to leadership changes
-    ControllerLeadershipManager.getInstance().subscribe(PinotLLCRealtimeSegmentManager.class.getName(), this);
 
     // Setup change listeners for already existing tables, if any.
     processPropertyStoreChange(_tableConfigPath);
@@ -125,7 +124,12 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
         continue;
       }
 
-      StreamConfig metadata = new StreamConfig(tableConfig.getIndexingConfig().getStreamConfigs());
+      // Skip if the current controller isn't the leader of this table
+      if (!_leadControllerManager.isLeaderForTable(realtimeTableName)) {
+        continue;
+      }
+
+      StreamConfig metadata = new StreamConfig(realtimeTableName, tableConfig.getIndexingConfig().getStreamConfigs());
       if (metadata.hasHighLevelConsumerType()) {
         idealStateMap.put(realtimeTableName, _pinotHelixResourceManager.getHelixAdmin()
             .getResourceIdealState(_pinotHelixResourceManager.getHelixClusterName(), realtimeTableName));
@@ -248,7 +252,7 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
           realtimeSegmentMetadataToAdd.setSegmentName(segmentId);
 
           // Add the new metadata to the property store
-          ZKMetadataProvider.setRealtimeSegmentZKMetadata(_pinotHelixResourceManager.getPropertyStore(),
+          ZKMetadataProvider.setRealtimeSegmentZKMetadata(_pinotHelixResourceManager.getPropertyStore(), resourceName,
               realtimeSegmentMetadataToAdd);
 
           // Update the ideal state to add the new realtime segment
@@ -268,10 +272,6 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
             .addMeteredGlobalValue(ControllerMeter.CONTROLLER_REALTIME_TABLE_SEGMENT_ASSIGNMENT_ERROR, 1L);
       }
     }
-  }
-
-  private boolean isLeader() {
-    return ControllerLeadershipManager.getInstance().isLeader();
   }
 
   @Override
@@ -297,13 +297,9 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
       LOGGER.info("Processing change notification for path: {}", path);
       refreshWatchers(path);
 
-      if (isLeader()) {
-        if (path.matches(REALTIME_SEGMENT_PROPERTY_STORE_PATH_PATTERN) || path
-            .matches(REALTIME_TABLE_CONFIG_PROPERTY_STORE_PATH_PATTERN) || path.equals(CONTROLLER_LEADER_CHANGE)) {
-          assignRealtimeSegmentsToServerInstancesIfNecessary();
-        }
-      } else {
-        LOGGER.info("Not the leader of this cluster, ignoring realtime segment property store change.");
+      if (path.matches(REALTIME_SEGMENT_PROPERTY_STORE_PATH_PATTERN) || path
+          .matches(REALTIME_TABLE_CONFIG_PROPERTY_STORE_PATH_PATTERN) || path.equals(CONTROLLER_LEADER_CHANGE)) {
+        assignRealtimeSegmentsToServerInstancesIfNecessary();
       }
     } catch (Exception e) {
       LOGGER.error("Caught exception while processing change for path {}", path, e);
@@ -329,11 +325,16 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
     }
 
     for (ZNRecord tableConfigZnRecord : tableConfigs) {
+      // NOTE: it is possible that znRecord is null if the record gets removed while calling this method
+      if (tableConfigZnRecord == null) {
+        continue;
+      }
       try {
         String znRecordId = tableConfigZnRecord.getId();
         if (TableNameBuilder.getTableTypeFromTableName(znRecordId) == TableType.REALTIME) {
           TableConfig tableConfig = TableConfig.fromZnRecord(tableConfigZnRecord);
-          StreamConfig metadata = new StreamConfig(tableConfig.getIndexingConfig().getStreamConfigs());
+          StreamConfig metadata = new StreamConfig(tableConfig.getTableName(),
+              tableConfig.getIndexingConfig().getStreamConfigs());
           if (metadata.hasHighLevelConsumerType()) {
             String realtimeTable = tableConfig.getTableName();
             String realtimeSegmentsPathForTable = _propertyStorePath + SEGMENTS_PATH + "/" + realtimeTable;
@@ -372,13 +373,8 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
       } catch (Exception e) {
         // we want to continue setting watches for other tables for any kind of exception here so that
         // errors with one table don't impact others
-        if (tableConfigZnRecord == null) {
-          // Can happen if the table config zn record failed to parse.
-          LOGGER.error("Got null ZN record for table config", e);
-        } else {
-          LOGGER.error("Caught exception while processing ZNRecord id: {}. Skipping node to continue setting watches",
-              tableConfigZnRecord.getId(), e);
-        }
+        LOGGER.error("Caught exception while processing ZNRecord id: {}. Skipping node to continue setting watches",
+            tableConfigZnRecord.getId(), e);
       }
     }
   }
@@ -412,15 +408,5 @@ public class PinotRealtimeSegmentManager implements HelixPropertyListener, IZkCh
       throws Exception {
     LOGGER.info("PinotRealtimeSegmentManager.handleDataDeleted: {}", dataPath);
     processPropertyStoreChange(dataPath);
-  }
-
-  @Override
-  public void onBecomingLeader() {
-    processPropertyStoreChange(CONTROLLER_LEADER_CHANGE);
-  }
-
-  @Override
-  public void onBecomingNonLeader() {
-    processPropertyStoreChange(CONTROLLER_LEADER_CHANGE);
   }
 }

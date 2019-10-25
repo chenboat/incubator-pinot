@@ -19,16 +19,23 @@
 package org.apache.pinot.core.indexsegment.mutable;
 
 import com.google.common.base.Preconditions;
+import it.unimi.dsi.fastutil.ints.IntArrays;
 import java.io.IOException;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 import org.apache.pinot.common.config.SegmentPartitionConfig;
+import org.apache.pinot.common.data.DimensionFieldSpec;
 import org.apache.pinot.common.data.FieldSpec;
+import org.apache.pinot.common.data.MetricFieldSpec;
 import org.apache.pinot.common.data.Schema;
+import org.apache.pinot.common.metadata.RowMetadata;
 import org.apache.pinot.common.segment.SegmentMetadata;
 import org.apache.pinot.common.utils.NetUtil;
 import org.apache.pinot.core.data.GenericRow;
@@ -39,7 +46,8 @@ import org.apache.pinot.core.io.readerwriter.impl.FixedByteSingleColumnMultiValu
 import org.apache.pinot.core.io.readerwriter.impl.FixedByteSingleColumnSingleValueReaderWriter;
 import org.apache.pinot.core.realtime.impl.RealtimeSegmentConfig;
 import org.apache.pinot.core.realtime.impl.RealtimeSegmentStatsHistory;
-import org.apache.pinot.core.realtime.impl.dictionary.MutableDictionary;
+import org.apache.pinot.core.realtime.impl.dictionary.BaseMutableDictionary;
+import org.apache.pinot.core.realtime.impl.dictionary.BaseOffHeapMutableDictionary;
 import org.apache.pinot.core.realtime.impl.dictionary.MutableDictionaryFactory;
 import org.apache.pinot.core.realtime.impl.invertedindex.RealtimeInvertedIndexReader;
 import org.apache.pinot.core.segment.creator.impl.V1Constants;
@@ -79,7 +87,7 @@ public class MutableSegmentImpl implements MutableSegment {
   private final RealtimeSegmentStatsHistory _statsHistory;
   private final SegmentPartitionConfig _segmentPartitionConfig;
 
-  private final Map<String, MutableDictionary> _dictionaryMap = new HashMap<>();
+  private final Map<String, BaseMutableDictionary> _dictionaryMap = new HashMap<>();
   private final Map<String, DataFileReader> _indexReaderWriterMap = new HashMap<>();
   private final Map<String, Integer> _maxNumValuesMap = new HashMap<>();
   private final Map<String, RealtimeInvertedIndexReader> _invertedIndexMap = new HashMap<>();
@@ -93,6 +101,15 @@ public class MutableSegmentImpl implements MutableSegment {
   private volatile long _minTime = Long.MAX_VALUE;
   private volatile long _maxTime = Long.MIN_VALUE;
   private final int _numKeyColumns;
+
+  // Cache the physical (non-virtual) field specs
+  private final Collection<FieldSpec> _physicalFieldSpecs;
+  private final Collection<DimensionFieldSpec> _physicalDimensionFieldSpecs;
+  private final Collection<MetricFieldSpec> _physicalMetricFieldSpecs;
+
+  // default message metadata
+  private volatile long _lastIndexedTimeMs = Long.MIN_VALUE;
+  private volatile long _latestIngestionTimeMs = Long.MIN_VALUE;
 
   public MutableSegmentImpl(RealtimeSegmentConfig config) {
     _segmentName = config.getSegmentName();
@@ -109,13 +126,44 @@ public class MutableSegmentImpl implements MutableSegment {
         // In realtime total docs and total raw docs are the same currently.
         return _numDocsIndexed;
       }
+
+      @Override
+      public long getLastIndexedTimestamp() {
+        return _lastIndexedTimeMs;
+      }
+
+      @Override
+      public long getLatestIngestionTimestamp() {
+        return _latestIngestionTimeMs;
+      }
     };
 
     _offHeap = config.isOffHeap();
     _memoryManager = config.getMemoryManager();
     _statsHistory = config.getStatsHistory();
     _segmentPartitionConfig = config.getSegmentPartitionConfig();
-    _numKeyColumns = _schema.getDimensionNames().size() + 1;
+
+    Collection<FieldSpec> allFieldSpecs = _schema.getAllFieldSpecs();
+    List<FieldSpec> physicalFieldSpecs = new ArrayList<>(allFieldSpecs.size());
+    List<DimensionFieldSpec> physicalDimensionFieldSpecs = new ArrayList<>(_schema.getDimensionNames().size());
+    List<MetricFieldSpec> physicalMetricFieldSpecs = new ArrayList<>(_schema.getMetricNames().size());
+
+    for (FieldSpec fieldSpec : allFieldSpecs) {
+      if (!fieldSpec.isVirtualColumn()) {
+        physicalFieldSpecs.add(fieldSpec);
+
+        FieldSpec.FieldType fieldType = fieldSpec.getFieldType();
+        if (fieldType == FieldSpec.FieldType.DIMENSION) {
+          physicalDimensionFieldSpecs.add((DimensionFieldSpec) fieldSpec);
+        } else if (fieldType == FieldSpec.FieldType.METRIC) {
+          physicalMetricFieldSpecs.add((MetricFieldSpec) fieldSpec);
+        }
+      }
+    }
+    _physicalFieldSpecs = Collections.unmodifiableCollection(physicalFieldSpecs);
+    _physicalDimensionFieldSpecs = Collections.unmodifiableCollection(physicalDimensionFieldSpecs);
+    _physicalMetricFieldSpecs = Collections.unmodifiableCollection(physicalMetricFieldSpecs);
+    _numKeyColumns = _physicalDimensionFieldSpecs.size() + 1;  // Add 1 for time column
 
     _logger =
         LoggerFactory.getLogger(MutableSegmentImpl.class.getName() + "_" + _segmentName + "_" + config.getStreamName());
@@ -126,7 +174,7 @@ public class MutableSegmentImpl implements MutableSegment {
     int avgNumMultiValues = config.getAvgNumMultiValues();
 
     // Initialize for each column
-    for (FieldSpec fieldSpec : _schema.getAllFieldSpecs()) {
+    for (FieldSpec fieldSpec : _physicalFieldSpecs) {
       String column = fieldSpec.getName();
       _maxNumValuesMap.put(column, 0);
 
@@ -146,10 +194,12 @@ public class MutableSegmentImpl implements MutableSegment {
         } else {
           dictionaryColumnSize = dataType.size();
         }
+        // NOTE: preserve 10% buffer for cardinality to reduce the chance of re-sizing the dictionary
+        int estimatedCardinality = (int) (_statsHistory.getEstimatedCardinality(column) * 1.1);
         String allocationContext = buildAllocationContext(_segmentName, column, V1Constants.Dict.FILE_EXTENSION);
-        MutableDictionary dictionary = MutableDictionaryFactory
+        BaseMutableDictionary dictionary = MutableDictionaryFactory
             .getMutableDictionary(dataType, _offHeap, _memoryManager, dictionaryColumnSize,
-                Math.min(_statsHistory.getEstimatedCardinality(column), _capacity), allocationContext);
+                Math.min(estimatedCardinality, _capacity), allocationContext);
         _dictionaryMap.put(column, dictionary);
 
         // Even though the column is defined as 'no-dictionary' in the config, we did create dictionary for consuming segment.
@@ -179,7 +229,7 @@ public class MutableSegmentImpl implements MutableSegment {
 
     // Metric aggregation can be enabled only if config is specified, and all dimensions have dictionary,
     // and no metrics have dictionary. If not enabled, the map returned is null.
-    _recordIdMap = enableMetricsAggregationIfPossible(config, _schema, noDictionaryColumns);
+    _recordIdMap = enableMetricsAggregationIfPossible(config, noDictionaryColumns);
   }
 
   public SegmentPartitionConfig getSegmentPartitionConfig() {
@@ -195,7 +245,9 @@ public class MutableSegmentImpl implements MutableSegment {
   }
 
   @Override
-  public boolean index(GenericRow row) {
+  public boolean index(GenericRow row, @Nullable RowMetadata rowMetadata) {
+
+    boolean canTakeMore;
     // Update dictionary first
     Map<String, Object> dictIdMap = updateDictionary(row);
 
@@ -210,45 +262,48 @@ public class MutableSegmentImpl implements MutableSegment {
       // Add forward and inverted indices for new document.
       addForwardIndex(row, docId, dictIdMap);
       addInvertedIndex(docId, dictIdMap);
+
       // Update number of document indexed at last to make the latest record queryable
-      return _numDocsIndexed++ < _capacity;
+      canTakeMore = _numDocsIndexed++ < _capacity;
     } else {
       Preconditions
           .checkState(_aggregateMetrics, "Invalid document-id during indexing: " + docId + " expected: " + numDocs);
       // Update metrics for existing document.
-      return aggregateMetrics(row, docId);
+      canTakeMore = aggregateMetrics(row, docId);
     }
+
+    _lastIndexedTimeMs = System.currentTimeMillis();
+
+    if (rowMetadata != null && rowMetadata.getIngestionTimeMs() != Long.MIN_VALUE) {
+      _latestIngestionTimeMs = Math.max(_latestIngestionTimeMs, rowMetadata.getIngestionTimeMs());
+    }
+    return canTakeMore;
   }
 
   private Map<String, Object> updateDictionary(GenericRow row) {
     Map<String, Object> dictIdMap = new HashMap<>();
-    for (FieldSpec fieldSpec : _schema.getAllFieldSpecs()) {
+    for (FieldSpec fieldSpec : _physicalFieldSpecs) {
       String column = fieldSpec.getName();
       Object value = row.getValue(column);
-      MutableDictionary dictionary = _dictionaryMap.get(column);
+
+      BaseMutableDictionary dictionary = _dictionaryMap.get(column);
       if (dictionary != null) {
-        dictionary.index(value);
+        if (fieldSpec.isSingleValueField()) {
+          dictIdMap.put(column, dictionary.index(value));
+        } else {
+          int[] dictIds = dictionary.index((Object[]) value);
+          dictIdMap.put(column, dictIds);
+          int numValues = dictIds.length;
+          // Update max number of values for multi-value column
+          if (_maxNumValuesMap.get(column) < numValues) {
+            _maxNumValuesMap.put(column, numValues);
+          }
+
+          // No need to update min/max time value as time column cannot be multi-valued
+          continue;
+        }
       }
-      // Update max number of values for multi-value column
-      if (fieldSpec.isSingleValueField()) {
-        if (dictionary != null) {
-          dictIdMap.put(column, dictionary.indexOf(value));
-        }
-      } else {
-        // No-dictionary not supported for multi-valued columns.
-        int i = 0;
-        Object[] values = (Object[]) value;
-        int[] dictIds = new int[values.length];
-        for (Object object : values) {
-          dictIds[i++] = dictionary.indexOf(object);
-        }
-        dictIdMap.put(column, dictIds);
-        int numValues = ((Object[]) value).length;
-        if (_maxNumValuesMap.get(column) < numValues) {
-          _maxNumValuesMap.put(column, numValues);
-        }
-        continue;
-      }
+
       // Update min/max value for time column
       if (fieldSpec.getFieldType().equals(FieldSpec.FieldType.TIME)) {
         long timeValue;
@@ -266,7 +321,7 @@ public class MutableSegmentImpl implements MutableSegment {
 
   private void addForwardIndex(GenericRow row, int docId, Map<String, Object> dictIdMap) {
     // Store dictionary Id(s) for columns with dictionary
-    for (FieldSpec fieldSpec : _schema.getAllFieldSpecs()) {
+    for (FieldSpec fieldSpec : _physicalFieldSpecs) {
       String column = fieldSpec.getName();
       Object value = row.getValue(column);
       if (fieldSpec.isSingleValueField()) {
@@ -308,7 +363,7 @@ public class MutableSegmentImpl implements MutableSegment {
     // Update inverted index at last
     // NOTE: inverted index have to be updated at last because once it gets updated, the latest record will become
     // queryable
-    for (FieldSpec fieldSpec : _schema.getAllFieldSpecs()) {
+    for (FieldSpec fieldSpec : _physicalFieldSpecs) {
       String column = fieldSpec.getName();
       RealtimeInvertedIndexReader invertedIndex = _invertedIndexMap.get(column);
       if (invertedIndex != null) {
@@ -325,16 +380,13 @@ public class MutableSegmentImpl implements MutableSegment {
   }
 
   private boolean aggregateMetrics(GenericRow row, int docId) {
-    for (FieldSpec metricSpec : _schema.getMetricFieldSpecs()) {
-      String column = metricSpec.getName();
+    for (MetricFieldSpec metricFieldSpec : _physicalMetricFieldSpecs) {
+      String column = metricFieldSpec.getName();
       Object value = row.getValue(column);
-      Preconditions.checkState(metricSpec.isSingleValueField(), "Multivalued metrics cannot be updated.");
       FixedByteSingleColumnSingleValueReaderWriter indexReaderWriter =
           (FixedByteSingleColumnSingleValueReaderWriter) _indexReaderWriterMap.get(column);
-      Preconditions.checkState(_dictionaryMap.get(column) == null, "Updating metrics not supported with dictionary.");
-      FieldSpec.DataType dataType = metricSpec.getDataType();
 
-      // FIXME: this breaks for multi value metrics. https://github.com/apache/incubator-pinot/issues/3867
+      FieldSpec.DataType dataType = metricFieldSpec.getDataType();
       switch (dataType) {
         case INT:
           indexReaderWriter.setInt(docId, (Integer) value + indexReaderWriter.getInt(docId));
@@ -343,10 +395,10 @@ public class MutableSegmentImpl implements MutableSegment {
           indexReaderWriter.setLong(docId, (Long) value + indexReaderWriter.getLong(docId));
           break;
         case FLOAT:
-          indexReaderWriter.setFloat(docId, indexReaderWriter.getFloat(docId) + indexReaderWriter.getFloat(docId));
+          indexReaderWriter.setFloat(docId, (Float) value + indexReaderWriter.getFloat(docId));
           break;
         case DOUBLE:
-          indexReaderWriter.setDouble(docId, indexReaderWriter.getDouble(docId) + indexReaderWriter.getDouble(docId));
+          indexReaderWriter.setDouble(docId, (Double) value + indexReaderWriter.getDouble(docId));
           break;
         default:
           throw new UnsupportedOperationException(
@@ -373,6 +425,7 @@ public class MutableSegmentImpl implements MutableSegment {
 
   @Override
   public Set<String> getColumnNames() {
+    // Return all column names, virtual and physical.
     return _schema.getColumnNames();
   }
 
@@ -380,10 +433,8 @@ public class MutableSegmentImpl implements MutableSegment {
   public Set<String> getPhysicalColumnNames() {
     HashSet<String> physicalColumnNames = new HashSet<>();
 
-    for (String columnName : getColumnNames()) {
-      if (!_segmentMetadata.getSchema().isVirtualColumn(columnName)) {
-        physicalColumnNames.add(columnName);
-      }
+    for (FieldSpec fieldSpec : _physicalFieldSpecs) {
+      physicalColumnNames.add(fieldSpec.getName());
     }
 
     return physicalColumnNames;
@@ -391,23 +442,19 @@ public class MutableSegmentImpl implements MutableSegment {
 
   @Override
   public ColumnDataSource getDataSource(String columnName) {
-    if (!_schema.isVirtualColumn(columnName)) {
-      return new ColumnDataSource(_schema.getFieldSpecFor(columnName), _numDocsIndexed,
-          _maxNumValuesMap.get(columnName), _indexReaderWriterMap.get(columnName), _invertedIndexMap.get(columnName),
-          _dictionaryMap.get(columnName), _bloomFilterMap.get(columnName));
+    FieldSpec fieldSpec = _schema.getFieldSpecFor(columnName);
+    if (fieldSpec.isVirtualColumn()) {
+      VirtualColumnContext virtualColumnContext =
+          new VirtualColumnContext(NetUtil.getHostnameOrAddress(), getSegmentName(), columnName, _numDocsIndexed + 1);
+      VirtualColumnProvider virtualColumnProvider =
+          VirtualColumnProviderFactory.buildProvider(_schema.getFieldSpecFor(columnName).getVirtualColumnProvider());
+      return new ColumnDataSource(virtualColumnProvider.buildColumnIndexContainer(virtualColumnContext),
+          virtualColumnProvider.buildMetadata(virtualColumnContext));
     } else {
-      return getVirtualDataSource(columnName);
+      return new ColumnDataSource(fieldSpec, _numDocsIndexed, _maxNumValuesMap.get(columnName),
+          _indexReaderWriterMap.get(columnName), _invertedIndexMap.get(columnName), _dictionaryMap.get(columnName),
+          _bloomFilterMap.get(columnName));
     }
-  }
-
-  private ColumnDataSource getVirtualDataSource(String column) {
-    VirtualColumnContext virtualColumnContext =
-        new VirtualColumnContext(NetUtil.getHostnameOrAddress(), _segmentMetadata.getTableName(), getSegmentName(),
-            column, _numDocsIndexed + 1);
-    VirtualColumnProvider provider =
-        VirtualColumnProviderFactory.buildProvider(_schema.getFieldSpecFor(column).getVirtualColumnProvider());
-    return new ColumnDataSource(provider.buildColumnIndexContainer(virtualColumnContext),
-        provider.buildMetadata(virtualColumnContext));
   }
 
   @Override
@@ -415,9 +462,14 @@ public class MutableSegmentImpl implements MutableSegment {
     return null;
   }
 
-  @Override
+  /**
+   * Returns a record that contains only physical columns
+   * @param docId document ID
+   * @param reuse a GenericRow object that will be re-used if provided. Otherwise, this method will allocate a new one
+   * @return Generic row with physical columns of the specified row.
+   */
   public GenericRow getRecord(int docId, GenericRow reuse) {
-    for (FieldSpec fieldSpec : _schema.getAllFieldSpecs()) {
+    for (FieldSpec fieldSpec : _physicalFieldSpecs) {
       String column = fieldSpec.getName();
       reuse.putField(column, IndexSegmentUtils
           .getValue(docId, fieldSpec, _indexReaderWriterMap.get(column), _dictionaryMap.get(column),
@@ -440,11 +492,13 @@ public class MutableSegmentImpl implements MutableSegment {
                 numSeconds);
 
         RealtimeSegmentStatsHistory.SegmentStats segmentStats = new RealtimeSegmentStatsHistory.SegmentStats();
-        for (Map.Entry<String, MutableDictionary> entry : _dictionaryMap.entrySet()) {
+        for (Map.Entry<String, BaseMutableDictionary> entry : _dictionaryMap.entrySet()) {
+          String columnName = entry.getKey();
+          BaseOffHeapMutableDictionary dictionary = (BaseOffHeapMutableDictionary) entry.getValue();
           RealtimeSegmentStatsHistory.ColumnStats columnStats = new RealtimeSegmentStatsHistory.ColumnStats();
-          columnStats.setCardinality(entry.getValue().length());
-          columnStats.setAvgColumnSize(entry.getValue().getAvgValueSize());
-          segmentStats.setColumnStats(entry.getKey(), columnStats);
+          columnStats.setCardinality(dictionary.length());
+          columnStats.setAvgColumnSize(dictionary.getAvgValueSize());
+          segmentStats.setColumnStats(columnName, columnStats);
         }
         segmentStats.setNumRowsConsumed(_numDocsIndexed);
         segmentStats.setNumRowsIndexed(_numDocsIndexed);
@@ -469,7 +523,7 @@ public class MutableSegmentImpl implements MutableSegment {
       index.close();
     }
 
-    for (Map.Entry<String, MutableDictionary> entry : _dictionaryMap.entrySet()) {
+    for (Map.Entry<String, BaseMutableDictionary> entry : _dictionaryMap.entrySet()) {
       try {
         entry.getValue().close();
       } catch (IOException e) {
@@ -490,118 +544,6 @@ public class MutableSegmentImpl implements MutableSegment {
     }
   }
 
-  private IntIterator[] getSortedBitmapIntIteratorsForIntColumn(String column) {
-    MutableDictionary dictionary = _dictionaryMap.get(column);
-    int numValues = dictionary.length();
-    IntIterator[] intIterators = new IntIterator[numValues];
-    RealtimeInvertedIndexReader invertedIndex = _invertedIndexMap.get(column);
-
-    int[] values = new int[numValues];
-    for (int i = 0; i < numValues; i++) {
-      values[i] = (Integer) dictionary.get(i);
-    }
-
-    long start = System.currentTimeMillis();
-    Arrays.sort(values);
-    _logger.info("Spent {}ms sorting int column: {} with cardinality: {}", System.currentTimeMillis() - start, column,
-        numValues);
-
-    for (int i = 0; i < numValues; i++) {
-      intIterators[i] = invertedIndex.getDocIds(dictionary.indexOf(values[i])).getIntIterator();
-    }
-    return intIterators;
-  }
-
-  private IntIterator[] getSortedBitmapIntIteratorsForLongColumn(String column) {
-    MutableDictionary dictionary = _dictionaryMap.get(column);
-    int numValues = dictionary.length();
-    IntIterator[] intIterators = new IntIterator[numValues];
-    RealtimeInvertedIndexReader invertedIndex = _invertedIndexMap.get(column);
-
-    long[] values = new long[numValues];
-    for (int i = 0; i < numValues; i++) {
-      values[i] = (Long) dictionary.get(i);
-    }
-
-    long start = System.currentTimeMillis();
-    Arrays.sort(values);
-    _logger.info("Spent {}ms sorting long column: {} with cardinality: {}", System.currentTimeMillis() - start, column,
-        numValues);
-
-    for (int i = 0; i < numValues; i++) {
-      intIterators[i] = invertedIndex.getDocIds(dictionary.indexOf(values[i])).getIntIterator();
-    }
-    return intIterators;
-  }
-
-  private IntIterator[] getSortedBitmapIntIteratorsForFloatColumn(String column) {
-    MutableDictionary dictionary = _dictionaryMap.get(column);
-    int numValues = dictionary.length();
-    IntIterator[] intIterators = new IntIterator[numValues];
-    RealtimeInvertedIndexReader invertedIndex = _invertedIndexMap.get(column);
-
-    float[] values = new float[numValues];
-    for (int i = 0; i < numValues; i++) {
-      values[i] = (Float) dictionary.get(i);
-    }
-
-    long start = System.currentTimeMillis();
-    Arrays.sort(values);
-    _logger.info("Spent {}ms sorting float column: {} with cardinality: {}", System.currentTimeMillis() - start, column,
-        numValues);
-
-    for (int i = 0; i < numValues; i++) {
-      intIterators[i] = invertedIndex.getDocIds(dictionary.indexOf(values[i])).getIntIterator();
-    }
-    return intIterators;
-  }
-
-  private IntIterator[] getSortedBitmapIntIteratorsForDoubleColumn(String column) {
-    MutableDictionary dictionary = _dictionaryMap.get(column);
-    int numValues = dictionary.length();
-    IntIterator[] intIterators = new IntIterator[numValues];
-    RealtimeInvertedIndexReader invertedIndex = _invertedIndexMap.get(column);
-
-    double[] values = new double[numValues];
-    for (int i = 0; i < numValues; i++) {
-      values[i] = (Double) dictionary.get(i);
-    }
-
-    long start = System.currentTimeMillis();
-    Arrays.sort(values);
-    _logger
-        .info("Spent {}ms sorting double column: {} with cardinality: {}", System.currentTimeMillis() - start, column,
-            numValues);
-
-    for (int i = 0; i < numValues; i++) {
-      intIterators[i] = invertedIndex.getDocIds(dictionary.indexOf(values[i])).getIntIterator();
-    }
-    return intIterators;
-  }
-
-  private IntIterator[] getSortedBitmapIntIteratorsForStringColumn(String column) {
-    MutableDictionary dictionary = _dictionaryMap.get(column);
-    int numValues = dictionary.length();
-    IntIterator[] intIterators = new IntIterator[numValues];
-    RealtimeInvertedIndexReader invertedIndex = _invertedIndexMap.get(column);
-
-    String[] values = new String[numValues];
-    for (int i = 0; i < numValues; i++) {
-      values[i] = (String) dictionary.get(i);
-    }
-
-    long start = System.currentTimeMillis();
-    Arrays.sort(values);
-    _logger
-        .info("Spent {}ms sorting string column: {} with cardinality: {}", System.currentTimeMillis() - start, column,
-            numValues);
-
-    for (int i = 0; i < numValues; i++) {
-      intIterators[i] = invertedIndex.getDocIds(dictionary.indexOf(values[i])).getIntIterator();
-    }
-    return intIterators;
-  }
-
   /**
    * Returns the docIds to use for iteration when the data is sorted by the given column.
    * <p>Called only by realtime record reader.
@@ -610,42 +552,29 @@ public class MutableSegmentImpl implements MutableSegment {
    * @return The docIds to use for iteration
    */
   public int[] getSortedDocIdIterationOrderWithSortedColumn(String column) {
-    int[] docIds = new int[_numDocsIndexed];
+    BaseMutableDictionary dictionary = _dictionaryMap.get(column);
+    int numValues = dictionary.length();
 
-    // Get docId iterators that iterate in order on the data
-    IntIterator[] iterators;
-    FieldSpec.DataType dataType = _schema.getFieldSpecFor(column).getDataType();
-    switch (dataType) {
-      case INT:
-        iterators = getSortedBitmapIntIteratorsForIntColumn(column);
-        break;
-      case LONG:
-        iterators = getSortedBitmapIntIteratorsForLongColumn(column);
-        break;
-      case FLOAT:
-        iterators = getSortedBitmapIntIteratorsForFloatColumn(column);
-        break;
-      case DOUBLE:
-        iterators = getSortedBitmapIntIteratorsForDoubleColumn(column);
-        break;
-      case STRING:
-        iterators = getSortedBitmapIntIteratorsForStringColumn(column);
-        break;
-      default:
-        throw new UnsupportedOperationException("Unsupported data type: " + dataType + " for sorted column: " + column);
+    int[] dictIds = new int[numValues];
+    for (int i = 0; i < numValues; i++) {
+      dictIds[i] = i;
     }
 
-    // Drain the iterators into the docIds array
-    int i = 0;
-    for (IntIterator iterator : iterators) {
-      while (iterator.hasNext()) {
-        docIds[i++] = iterator.next();
+    IntArrays.quickSort(dictIds, (dictId1, dictId2) -> dictionary.compare(dictId1, dictId2));
+    RealtimeInvertedIndexReader invertedIndex = _invertedIndexMap.get(column);
+    int[] docIds = new int[_numDocsIndexed];
+    int docIdIndex = 0;
+    for (int dictId : dictIds) {
+      IntIterator intIterator = invertedIndex.getDocIds(dictId).getIntIterator();
+      while (intIterator.hasNext()) {
+        docIds[docIdIndex++] = intIterator.next();
       }
     }
 
     // Sanity check
-    Preconditions.checkState(_numDocsIndexed == i,
-        "The number of docs indexed: %s is not equal to the number of sorted documents: %s", _numDocsIndexed, i);
+    Preconditions.checkState(_numDocsIndexed == docIdIndex,
+        "The number of documents indexed: %s is not equal to the number of sorted documents: %s", _numDocsIndexed,
+        docIdIndex);
 
     return docIds;
   }
@@ -671,8 +600,8 @@ public class MutableSegmentImpl implements MutableSegment {
     int[] dictIds = new int[_numKeyColumns]; // dimensions + time column.
 
     // FIXME: this for loop breaks for multi value dimensions. https://github.com/apache/incubator-pinot/issues/3867
-    for (String column : _schema.getDimensionNames()) {
-      dictIds[i++] = (Integer) dictIdMap.get(column);
+    for (FieldSpec fieldSpec : _physicalDimensionFieldSpecs) {
+      dictIds[i++] = (Integer) dictIdMap.get(fieldSpec.getName());
     }
 
     String timeColumnName = _schema.getTimeColumnName();
@@ -689,17 +618,17 @@ public class MutableSegmentImpl implements MutableSegment {
    *   <li> All dimensions and time are dictionary encoded. This is because an integer array containing dictionary id's
    *        is used as key for dimensions to record Id map. </li>
    *   <li> None of the metrics are dictionary encoded. </li>
+   *   <li> All columns should be single-valued (see https://github.com/apache/incubator-pinot/issues/3867)</li>
    * </ul>
    *
    * TODO: Eliminate the requirement on dictionary encoding for dimension and metric columns.
    *
    * @param config Segment config.
-   * @param schema Schema for the table.
    * @param noDictionaryColumns Set of no dictionary columns.
    *
    * @return Map from dictionary id array to doc id, null if metrics aggregation cannot be enabled.
    */
-  private IdMap<FixedIntArray> enableMetricsAggregationIfPossible(RealtimeSegmentConfig config, Schema schema,
+  private IdMap<FixedIntArray> enableMetricsAggregationIfPossible(RealtimeSegmentConfig config,
       Set<String> noDictionaryColumns) {
     _aggregateMetrics = config.aggregateMetrics();
     if (!_aggregateMetrics) {
@@ -709,15 +638,16 @@ public class MutableSegmentImpl implements MutableSegment {
 
     // All metric columns should have no-dictionary index.
     // All metric columns must be single value
-    for (String metric : schema.getMetricNames()) {
+    for (FieldSpec fieldSpec : _physicalMetricFieldSpecs) {
+      String metric = fieldSpec.getName();
       if (!noDictionaryColumns.contains(metric)) {
         _logger
             .warn("Metrics aggregation cannot be turned ON in presence of dictionary encoded metrics, eg: {}", metric);
         _aggregateMetrics = false;
         break;
       }
-      // https://github.com/apache/incubator-pinot/issues/3867
-      if (!schema.getMetricSpec(metric).isSingleValueField()) {
+
+      if (!fieldSpec.isSingleValueField()) {
         _logger
             .warn("Metrics aggregation cannot be turned ON in presence of multi-value metric columns, eg: {}", metric);
         _aggregateMetrics = false;
@@ -727,24 +657,25 @@ public class MutableSegmentImpl implements MutableSegment {
 
     // All dimension columns should be dictionary encoded.
     // All dimension columns must be single value
-    for (String dimension : schema.getDimensionNames()) {
+    for (FieldSpec fieldSpec : _physicalDimensionFieldSpecs) {
+      String dimension = fieldSpec.getName();
       if (noDictionaryColumns.contains(dimension)) {
         _logger
             .warn("Metrics aggregation cannot be turned ON in presence of no-dictionary dimensions, eg: {}", dimension);
         _aggregateMetrics = false;
         break;
       }
-      // https://github.com/apache/incubator-pinot/issues/3867
-      if (!schema.getDimensionSpec(dimension).isSingleValueField()) {
-        _logger
-            .warn("Metrics aggregation cannot be turned ON in presence of multi-value dimension columns, eg: {}", dimension);
+
+      if (!fieldSpec.isSingleValueField()) {
+        _logger.warn("Metrics aggregation cannot be turned ON in presence of multi-value dimension columns, eg: {}",
+            dimension);
         _aggregateMetrics = false;
         break;
       }
     }
 
     // Time column should be dictionary encoded.
-    String timeColumn = schema.getTimeColumnName();
+    String timeColumn = _schema.getTimeColumnName();
     if (noDictionaryColumns.contains(timeColumn)) {
       _logger
           .warn("Metrics aggregation cannot be turned ON in presence of no-dictionary time column, eg: {}", timeColumn);

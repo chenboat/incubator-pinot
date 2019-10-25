@@ -35,7 +35,7 @@ import org.apache.pinot.thirdeye.rootcause.timeseries.Baseline;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import static org.apache.pinot.thirdeye.dataframe.util.DataFrameUtils.*;
 
@@ -56,30 +56,24 @@ public class AbsoluteChangeRuleAnomalyFilter implements AnomalyFilter<AbsoluteCh
     List<MetricSlice> slices = new ArrayList<>();
     MetricSlice currentSlice =
         MetricSlice.from(me.getId(), anomaly.getStartTime(), anomaly.getEndTime(), me.getFilters());
-    slices.add(currentSlice);
 
     // customize baseline offset
-    MetricSlice baselineSlice = null;
     if (baseline != null) {
-      baselineSlice = this.baseline.scatter(currentSlice).get(0);
-      slices.add(baselineSlice);
+      slices.addAll(this.baseline.scatter(currentSlice));
     }
 
     Map<MetricSlice, DataFrame> aggregates =
         this.dataFetcher.fetchData(new InputDataSpec().withAggregateSlices(slices)).getAggregates();
 
-    double currentValue = getValueFromAggregates(currentSlice, aggregates);
+    double currentValue = anomaly.getAvgCurrentVal();
     double baselineValue =
-        baselineSlice == null ? anomaly.getAvgBaselineVal() : getValueFromAggregates(baselineSlice, aggregates);
+        baseline == null ? anomaly.getAvgBaselineVal() : this.baseline.gather(currentSlice, aggregates).getDouble(COL_VALUE, 0);
     // if inconsistent with up/down, filter the anomaly
     if (!pattern.equals(Pattern.UP_OR_DOWN) && (currentValue < baselineValue && pattern.equals(Pattern.UP)) || (
         currentValue > baselineValue && pattern.equals(Pattern.DOWN))) {
       return false;
     }
-    if (Math.abs(currentValue - baselineValue) < this.threshold) {
-      return false;
-    }
-    return true;
+    return Math.abs(currentValue - baselineValue) >= this.threshold;
   }
 
   @Override
@@ -92,9 +86,4 @@ public class AbsoluteChangeRuleAnomalyFilter implements AnomalyFilter<AbsoluteCh
     }
     this.threshold = spec.getThreshold();
   }
-
-  private double getValueFromAggregates(MetricSlice slice, Map<MetricSlice, DataFrame> aggregates) {
-    return aggregates.get(slice).getDouble(COL_VALUE, 0);
-  }
-
 }

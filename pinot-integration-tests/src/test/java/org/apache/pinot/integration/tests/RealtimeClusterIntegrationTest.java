@@ -24,10 +24,9 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import kafka.server.KafkaServerStartable;
 import org.apache.commons.io.FileUtils;
 import org.apache.pinot.common.data.Schema;
-import org.apache.pinot.common.utils.KafkaStarterUtils;
+import org.apache.pinot.core.realtime.impl.kafka.KafkaStarterUtils;
 import org.apache.pinot.util.TestUtils;
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
@@ -39,7 +38,6 @@ import org.testng.annotations.Test;
  * Integration test that creates a Kafka broker, creates a Pinot cluster that consumes from Kafka and queries Pinot.
  */
 public class RealtimeClusterIntegrationTest extends BaseClusterIntegrationTestSet {
-  private List<KafkaServerStartable> _kafkaStarters;
 
   @BeforeClass
   public void setUp()
@@ -73,43 +71,22 @@ public class RealtimeClusterIntegrationTest extends BaseClusterIntegrationTestSe
     executor.awaitTermination(10, TimeUnit.MINUTES);
 
     // Create Pinot table
-    setUpTable(avroFiles.get(0));
+    setUpRealtimeTable(avroFiles.get(0));
 
     // Wait for all documents loaded
     waitForAllDocsLoaded(600_000L);
   }
 
-  protected void startKafka() {
-    _kafkaStarters = KafkaStarterUtils
-        .startServers(getNumKafkaBrokers(), KafkaStarterUtils.DEFAULT_KAFKA_PORT, KafkaStarterUtils.DEFAULT_ZK_STR,
-            KafkaStarterUtils.getDefaultKafkaConfiguration());
-    KafkaStarterUtils.createTopic(getKafkaTopic(), KafkaStarterUtils.DEFAULT_ZK_STR, getNumKafkaPartitions());
-  }
-
-  protected void setUpTable(File avroFile)
+  @Test
+  @Override
+  public void testQueriesFromQueryFile()
       throws Exception {
-    File schemaFile = getSchemaFile();
-    Schema schema = Schema.fromFile(schemaFile);
-    String schemaName = schema.getSchemaName();
-    addSchema(schemaFile, schemaName);
-
-    String timeColumnName = schema.getTimeColumnName();
-    Assert.assertNotNull(timeColumnName);
-    TimeUnit outgoingTimeUnit = schema.getOutgoingTimeUnit();
-    Assert.assertNotNull(outgoingTimeUnit);
-    String timeType = outgoingTimeUnit.toString();
-
-    addRealtimeTable(getTableName(), useLlc(), KafkaStarterUtils.DEFAULT_KAFKA_BROKER, KafkaStarterUtils.DEFAULT_ZK_STR,
-        getKafkaTopic(), getRealtimeSegmentFlushSize(), avroFile, timeColumnName, timeType, schemaName, null, null,
-        getLoadMode(), getSortedColumn(), getInvertedIndexColumns(), getBloomFilterIndexColumns(), getRawIndexColumns(),
-        getTaskConfig(), getStreamConsumerFactoryClassName());
-
-    completeTableConfiguration();
+    super.testQueriesFromQueryFile();
   }
 
   @Test
   @Override
-  public void testQueriesFromQueryFile()
+  public void testSqlQueriesFromQueryFile()
       throws Exception {
     super.testQueriesFromQueryFile();
   }
@@ -178,9 +155,7 @@ public class RealtimeClusterIntegrationTest extends BaseClusterIntegrationTestSe
     stopServer();
     stopBroker();
     stopController();
-    for (KafkaServerStartable kafkaStarter : _kafkaStarters) {
-      KafkaStarterUtils.stopServer(kafkaStarter);
-    }
+    stopKafka();
     stopZk();
     FileUtils.deleteDirectory(_tempDir);
   }
@@ -203,5 +178,11 @@ public class RealtimeClusterIntegrationTest extends BaseClusterIntegrationTestSe
   @Override
   protected boolean isUsingNewConfigFormat() {
     return true;
+  }
+
+  @Test
+  public void testHardcodedSqlQueries()
+      throws Exception {
+    super.testHardcodedSqlQueries();
   }
 }

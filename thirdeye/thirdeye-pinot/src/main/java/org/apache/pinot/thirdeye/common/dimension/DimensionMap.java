@@ -34,9 +34,9 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.lang.ObjectUtils;
-import org.apache.commons.lang.exception.ExceptionUtils;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.ObjectUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,6 +47,7 @@ import org.slf4j.LoggerFactory;
  * converting to/from Json string in Map format, i.e., instead of storing {"sortedDimensionMap":{"country":"US",
  * "page_name":"front_page"}}, we only need to store {"country":"US","page_name":"front_page"}.
  */
+@Deprecated
 public class DimensionMap implements SortedMap<String, String>, Comparable<DimensionMap>, Serializable {
   private static final Logger LOG = LoggerFactory.getLogger(DimensionMap.class);
   private static ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -112,6 +113,21 @@ public class DimensionMap implements SortedMap<String, String>, Comparable<Dimen
       }
     }
     return dimensionMap;
+  }
+
+  // Check if this dimension map contains filters configured in that
+  public boolean contains(Map<String, String> that) {
+    if (that == null || that.size() == 0) {
+      return this.size() == 0;
+    }
+
+    for (Entry<String, String> filter : that.entrySet()) {
+      if (this.get(filter.getKey()) == null || !filter.getValue().equalsIgnoreCase(this.get(filter.getKey()))) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   /**

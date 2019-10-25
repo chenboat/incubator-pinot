@@ -21,7 +21,9 @@ package org.apache.pinot.common.config;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.lang.reflect.Field;
+import java.util.concurrent.TimeUnit;
 import org.apache.pinot.common.utils.EqualityUtils;
+import org.apache.pinot.common.utils.time.TimeUtils;
 import org.apache.pinot.startree.hll.HllConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,13 +57,16 @@ public class SegmentsValidationAndRetentionConfig {
   private String timeColumnName;
 
   @ConfigKey(value = "timeType")
-  private String timeType;
+  private TimeUnit _timeType;
 
   @ConfigKey(value = "segmentAssignmentStrategy")
   private String segmentAssignmentStrategy;
 
   @NestedConfig
   private ReplicaGroupStrategyConfig replicaGroupStrategyConfig;
+
+  @NestedConfig
+  private CompletionConfig _completionConfig;
 
   @NestedConfig
   private HllConfig hllConfig;
@@ -86,12 +91,12 @@ public class SegmentsValidationAndRetentionConfig {
     this.timeColumnName = timeColumnName;
   }
 
-  public String getTimeType() {
-    return timeType;
+  public TimeUnit getTimeType() {
+    return _timeType;
   }
 
   public void setTimeType(String timeType) {
-    this.timeType = timeType;
+    _timeType = TimeUtils.timeUnitFromString(timeType);
   }
 
   public String getRetentionTimeUnit() {
@@ -158,6 +163,14 @@ public class SegmentsValidationAndRetentionConfig {
     this.replicaGroupStrategyConfig = replicaGroupStrategyConfig;
   }
 
+  public CompletionConfig getCompletionConfig() {
+    return _completionConfig;
+  }
+
+  public void setCompletionConfig(CompletionConfig completionConfig) {
+    _completionConfig = completionConfig;
+  }
+
   public HllConfig getHllConfig() {
     return hllConfig;
   }
@@ -220,15 +233,15 @@ public class SegmentsValidationAndRetentionConfig {
 
     SegmentsValidationAndRetentionConfig that = (SegmentsValidationAndRetentionConfig) o;
 
-    return EqualityUtils.isEqual(retentionTimeUnit, that.retentionTimeUnit) && EqualityUtils
-        .isEqual(retentionTimeValue, that.retentionTimeValue) && EqualityUtils
-        .isEqual(segmentPushFrequency, that.segmentPushFrequency) && EqualityUtils
-        .isEqual(segmentPushType, that.segmentPushType) && EqualityUtils.isEqual(replication, that.replication)
-        && EqualityUtils.isEqual(schemaName, that.schemaName) && EqualityUtils
-        .isEqual(timeColumnName, that.timeColumnName) && EqualityUtils.isEqual(timeType, that.timeType) && EqualityUtils
-        .isEqual(segmentAssignmentStrategy, that.segmentAssignmentStrategy) && EqualityUtils
-        .isEqual(replicaGroupStrategyConfig, that.replicaGroupStrategyConfig) && EqualityUtils
-        .isEqual(hllConfig, that.hllConfig) && EqualityUtils.isEqual(replicasPerPartition, that.replicasPerPartition);
+    return EqualityUtils.isEqual(retentionTimeUnit, that.retentionTimeUnit) && EqualityUtils.isEqual(retentionTimeValue,
+        that.retentionTimeValue) && EqualityUtils.isEqual(segmentPushFrequency, that.segmentPushFrequency)
+        && EqualityUtils.isEqual(segmentPushType, that.segmentPushType) && EqualityUtils.isEqual(replication,
+        that.replication) && EqualityUtils.isEqual(schemaName, that.schemaName) && EqualityUtils.isEqual(timeColumnName,
+        that.timeColumnName) && EqualityUtils.isEqual(_timeType, that._timeType) && EqualityUtils.isEqual(
+        segmentAssignmentStrategy, that.segmentAssignmentStrategy) && EqualityUtils.isEqual(replicaGroupStrategyConfig,
+        that.replicaGroupStrategyConfig) && EqualityUtils.isEqual(_completionConfig, that._completionConfig)
+        && EqualityUtils.isEqual(hllConfig, that.hllConfig) && EqualityUtils.isEqual(replicasPerPartition,
+        that.replicasPerPartition);
   }
 
   @Override
@@ -240,9 +253,10 @@ public class SegmentsValidationAndRetentionConfig {
     result = EqualityUtils.hashCodeOf(result, replication);
     result = EqualityUtils.hashCodeOf(result, schemaName);
     result = EqualityUtils.hashCodeOf(result, timeColumnName);
-    result = EqualityUtils.hashCodeOf(result, timeType);
+    result = EqualityUtils.hashCodeOf(result, _timeType);
     result = EqualityUtils.hashCodeOf(result, segmentAssignmentStrategy);
     result = EqualityUtils.hashCodeOf(result, replicaGroupStrategyConfig);
+    result = EqualityUtils.hashCodeOf(result, _completionConfig);
     result = EqualityUtils.hashCodeOf(result, hllConfig);
     result = EqualityUtils.hashCodeOf(result, replicasPerPartition);
     return result;

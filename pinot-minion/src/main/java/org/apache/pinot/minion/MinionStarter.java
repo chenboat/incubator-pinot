@@ -28,6 +28,7 @@ import org.apache.commons.configuration.Configuration;
 import org.apache.helix.HelixAdmin;
 import org.apache.helix.HelixManager;
 import org.apache.helix.InstanceType;
+import org.apache.helix.SystemPropertyKeys;
 import org.apache.helix.manager.zk.ZKHelixManager;
 import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.task.TaskStateModelFactory;
@@ -75,11 +76,21 @@ public class MinionStarter {
     _helixClusterName = helixClusterName;
     _config = config;
     _instanceId = config.getString(CommonConstants.Helix.Instance.INSTANCE_ID_KEY,
-        CommonConstants.Minion.INSTANCE_PREFIX + NetUtil.getHostAddress() + "_"
+        CommonConstants.Helix.PREFIX_OF_MINION_INSTANCE + NetUtil.getHostAddress() + "_"
             + CommonConstants.Minion.DEFAULT_HELIX_PORT);
+    setupHelixSystemProperties();
     _helixManager = new ZKHelixManager(_helixClusterName, _instanceId, InstanceType.PARTICIPANT, zkAddress);
     _taskExecutorFactoryRegistry = new TaskExecutorFactoryRegistry();
     _eventObserverFactoryRegistry = new EventObserverFactoryRegistry();
+  }
+
+  private void setupHelixSystemProperties() {
+    // NOTE: Helix will disconnect the manager and disable the instance if it detects flapping (too frequent disconnect
+    // from ZooKeeper). Setting flapping time window to a small value can avoid this from happening. Helix ignores the
+    // non-positive value, so set the default value as 1.
+    System.setProperty(SystemPropertyKeys.FLAPPING_TIME_WINDOW, _config
+        .getString(CommonConstants.Helix.CONFIG_OF_MINION_FLAPPING_TIME_WINDOW_MS,
+            CommonConstants.Helix.DEFAULT_FLAPPING_TIME_WINDOW_MS));
   }
 
   /**
@@ -130,7 +141,9 @@ public class MinionStarter {
     MetricsHelper.initializeMetrics(_config);
     MetricsRegistry metricsRegistry = new MetricsRegistry();
     MetricsHelper.registerMetricsRegistry(metricsRegistry);
-    final MinionMetrics minionMetrics = new MinionMetrics(metricsRegistry);
+    final MinionMetrics minionMetrics = new MinionMetrics(_config
+        .getString(CommonConstants.Minion.CONFIG_OF_METRICS_PREFIX_KEY,
+            CommonConstants.Minion.CONFIG_OF_METRICS_PREFIX), metricsRegistry);
     minionMetrics.initializeGlobalMeters();
     minionContext.setMinionMetrics(minionMetrics);
 
@@ -209,8 +222,8 @@ public class MinionStarter {
   private void addInstanceTagIfNeeded() {
     InstanceConfig instanceConfig = _helixAdmin.getInstanceConfig(_helixClusterName, _instanceId);
     if (instanceConfig.getTags().isEmpty()) {
-      LOGGER.info("Adding default Helix tag: {} to Pinot minion", CommonConstants.Minion.UNTAGGED_INSTANCE);
-      _helixAdmin.addInstanceTag(_helixClusterName, _instanceId, CommonConstants.Minion.UNTAGGED_INSTANCE);
+      LOGGER.info("Adding default Helix tag: {} to Pinot minion", CommonConstants.Helix.UNTAGGED_MINION_INSTANCE);
+      _helixAdmin.addInstanceTag(_helixClusterName, _instanceId, CommonConstants.Helix.UNTAGGED_MINION_INSTANCE);
     }
   }
 }

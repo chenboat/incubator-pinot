@@ -56,31 +56,35 @@ public class ClusterChangeMediator implements ExternalViewChangeListener, Instan
   // If no change got for 1 hour, proactively check changes
   private static final long PROACTIVE_CHANGE_CHECK_INTERVAL_MS = 3600 * 1000L;
 
-  private final Map<ChangeType, ClusterChangeHandler> _changeHandlerMap;
+  private final Map<ChangeType, List<ClusterChangeHandler>> _changeHandlersMap;
   private final Map<ChangeType, Long> _lastChangeTimeMap = new HashMap<>();
   private final Map<ChangeType, Long> _lastProcessTimeMap = new HashMap<>();
 
   private final Thread _clusterChangeHandlingThread;
 
-  private volatile boolean _stopped = false;
+  private boolean _stopped = false;
 
-  public ClusterChangeMediator(Map<ChangeType, ClusterChangeHandler> changeHandlerMap, BrokerMetrics brokerMetrics) {
-    _changeHandlerMap = changeHandlerMap;
+  public ClusterChangeMediator(Map<ChangeType, List<ClusterChangeHandler>> changeHandlersMap,
+      BrokerMetrics brokerMetrics) {
+    _changeHandlersMap = changeHandlersMap;
 
     // Initialize last process time map
     long initTime = System.currentTimeMillis();
-    for (ChangeType changeType : changeHandlerMap.keySet()) {
+    for (ChangeType changeType : changeHandlersMap.keySet()) {
       _lastProcessTimeMap.put(changeType, initTime);
     }
 
     _clusterChangeHandlingThread = new Thread("ClusterChangeHandlingThread") {
       @Override
       public void run() {
-        while (!_stopped) {
+        while (true) {
           try {
-            for (Map.Entry<ChangeType, ClusterChangeHandler> entry : _changeHandlerMap.entrySet()) {
+            for (Map.Entry<ChangeType, List<ClusterChangeHandler>> entry : _changeHandlersMap.entrySet()) {
+              if (_stopped) {
+                return;
+              }
               ChangeType changeType = entry.getKey();
-              ClusterChangeHandler changeHandler = entry.getValue();
+              List<ClusterChangeHandler> changeHandlers = entry.getValue();
               long currentTime = System.currentTimeMillis();
               Long lastChangeTime;
               synchronized (_lastChangeTimeMap) {
@@ -89,17 +93,20 @@ public class ClusterChangeMediator implements ExternalViewChangeListener, Instan
               if (lastChangeTime != null) {
                 brokerMetrics.addTimedValue(BrokerTimer.CLUSTER_CHANGE_QUEUE_TIME, currentTime - lastChangeTime,
                     TimeUnit.MILLISECONDS);
-                processClusterChange(changeType, changeHandler);
+                processClusterChange(changeType, changeHandlers);
               } else {
                 long lastProcessTime = _lastProcessTimeMap.get(changeType);
                 if (currentTime - lastProcessTime > PROACTIVE_CHANGE_CHECK_INTERVAL_MS) {
                   LOGGER.info("Proactive check {} change", changeType);
                   brokerMetrics.addMeteredGlobalValue(BrokerMeter.PROACTIVE_CLUSTER_CHANGE_CHECK, 1L);
-                  processClusterChange(changeType, changeHandler);
+                  processClusterChange(changeType, changeHandlers);
                 }
               }
             }
             synchronized (_lastChangeTimeMap) {
+              if (_stopped) {
+                return;
+              }
               // Wait for at most 1/10 of proactive change check interval if no new event received. This can guarantee
               // that the proactive change check will not be delayed for more than 1/10 of the interval. In case of
               // spurious wakeup, execute the while loop again for the proactive change check.
@@ -116,10 +123,20 @@ public class ClusterChangeMediator implements ExternalViewChangeListener, Instan
     };
   }
 
-  private void processClusterChange(ChangeType changeType, ClusterChangeHandler changeHandler) {
+  private void processClusterChange(ChangeType changeType, List<ClusterChangeHandler> changeHandlers) {
     long startTime = System.currentTimeMillis();
     LOGGER.info("Start processing {} change", changeType);
-    changeHandler.processClusterChange();
+    for (ClusterChangeHandler changeHandler : changeHandlers) {
+      try {
+        long handlerStartTime = System.currentTimeMillis();
+        changeHandler.processClusterChange(changeType);
+        LOGGER.info("Finish handling {} change for handler: {} in {}ms", changeType, changeHandler.getClass().getName(),
+            System.currentTimeMillis() - handlerStartTime);
+      } catch (Exception e) {
+        LOGGER.error("Caught exception while handling {} change for handler: {}", changeType,
+            changeHandler.getClass().getName(), e);
+      }
+    }
     long endTime = System.currentTimeMillis();
     LOGGER.info("Finish processing {} change in {}ms", changeType, endTime - startTime);
     _lastProcessTimeMap.put(changeType, endTime);
@@ -128,7 +145,7 @@ public class ClusterChangeMediator implements ExternalViewChangeListener, Instan
   /**
    * Starts the cluster change mediator.
    */
-  public void start() {
+  public synchronized void start() {
     LOGGER.info("Starting the cluster change handling thread");
     _clusterChangeHandlingThread.start();
   }
@@ -136,7 +153,7 @@ public class ClusterChangeMediator implements ExternalViewChangeListener, Instan
   /**
    * Stops the cluster change mediator.
    */
-  public void stop() {
+  public synchronized void stop() {
     LOGGER.info("Stopping the cluster change handling thread");
     _stopped = true;
     synchronized (_lastChangeTimeMap) {
@@ -180,7 +197,11 @@ public class ClusterChangeMediator implements ExternalViewChangeListener, Instan
    *
    * @param changeType Type of the change
    */
-  private void enqueueChange(ChangeType changeType) {
+  private synchronized void enqueueChange(ChangeType changeType) {
+    // Do not enqueue or process changes if already stopped
+    if (_stopped) {
+      return;
+    }
     if (_clusterChangeHandlingThread.isAlive()) {
       LOGGER.info("Enqueue {} change", changeType);
       synchronized (_lastChangeTimeMap) {
@@ -191,7 +212,7 @@ public class ClusterChangeMediator implements ExternalViewChangeListener, Instan
       }
     } else {
       LOGGER.error("Cluster change handling thread is not alive, directly process the {} change", changeType);
-      processClusterChange(changeType, _changeHandlerMap.get(changeType));
+      processClusterChange(changeType, _changeHandlersMap.get(changeType));
     }
   }
 }

@@ -19,13 +19,12 @@
 
 package org.apache.pinot.thirdeye.detection.alert;
 
-import org.apache.pinot.thirdeye.anomaly.alert.v2.AlertJobSchedulerV2;
+import java.util.stream.Collectors;
 import org.apache.pinot.thirdeye.anomaly.task.TaskConstants;
 import org.apache.pinot.thirdeye.anomaly.utils.AnomalyUtils;
 import org.apache.pinot.thirdeye.datalayer.bao.DetectionAlertConfigManager;
 import org.apache.pinot.thirdeye.datalayer.dto.DetectionAlertConfigDTO;
 import org.apache.pinot.thirdeye.datasource.DAORegistry;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Executors;
@@ -42,6 +41,7 @@ import org.quartz.Trigger;
 import org.quartz.TriggerBuilder;
 import org.quartz.impl.StdSchedulerFactory;
 import org.quartz.impl.matchers.GroupMatcher;
+import org.quartz.utils.Key;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,7 +51,7 @@ import org.slf4j.LoggerFactory;
  * in the cron scheduler.
  */
 public class DetectionAlertScheduler implements Runnable {
-  private static final Logger LOG = LoggerFactory.getLogger(AlertJobSchedulerV2.class);
+  private static final Logger LOG = LoggerFactory.getLogger(DetectionAlertScheduler.class);
   private static final int DEFAULT_ALERT_DELAY = 1;
   private static final TimeUnit DEFAULT_ALERT_DELAY_UNIT = TimeUnit.MINUTES;
 
@@ -90,12 +90,12 @@ public class DetectionAlertScheduler implements Runnable {
   public void run() {
     try {
       // read all alert configs
-      LOG.info("Reading all alert configs..");
+      LOG.info("Scheduling all the subscription configs");
       List<DetectionAlertConfigDTO> alertConfigs = alertConfigDAO.findAll();
 
       // get active jobs
       Set<JobKey> scheduledJobs = getScheduledJobs();
-      LOG.info("Scheduled jobs {}", scheduledJobs);
+      LOG.info("Scheduled jobs {}", scheduledJobs.stream().map(Key::getName).collect(Collectors.toList()));
 
       for (DetectionAlertConfigDTO alertConfig : alertConfigs) {
         try {
@@ -144,7 +144,7 @@ public class DetectionAlertScheduler implements Runnable {
         TriggerBuilder.newTrigger().withSchedule(CronScheduleBuilder.cronSchedule(config.getCronExpression())).build();
     JobDetail job = JobBuilder.newJob(DetectionAlertJob.class).withIdentity(key).build();
     this.scheduler.scheduleJob(job, trigger);
-    LOG.info(String.format("scheduled detection pipeline job %s.", key.getName()));
+    LOG.info(String.format("scheduled detection pipeline job %s", key.getName()));
   }
 
   private void createOrUpdateAlertJob(Set<JobKey> scheduledJobs, DetectionAlertConfigDTO alertConfig)

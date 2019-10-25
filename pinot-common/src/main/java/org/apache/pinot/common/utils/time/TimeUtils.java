@@ -18,9 +18,8 @@
  */
 package org.apache.pinot.common.utils.time;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.Duration;
@@ -30,57 +29,90 @@ import org.joda.time.format.PeriodFormatterBuilder;
 
 
 public class TimeUtils {
-  private static final Map<String, TimeUnit> TIME_UNIT_MAP = new HashMap<>();
+  private static final String UPPER_CASE_DAYS = "DAYS";
+  private static final String UPPER_CASE_DAYS_SINCE_EPOCH = "DAYSSINCEEPOCH";
+  private static final String UPPER_CASE_HOURS = "HOURS";
+  private static final String UPPER_CASE_HOURS_SINCE_EPOCH = "HOURSSINCEEPOCH";
+  private static final String UPPER_CASE_MINUTES = "MINUTES";
+  private static final String UPPER_CASE_MINUTES_SINCE_EPOCH = "MINUTESSINCEEPOCH";
+  private static final String UPPER_CASE_SECONDS = "SECONDS";
+  private static final String UPPER_CASE_SECONDS_SINCE_EPOCH = "SECONDSSINCEEPOCH";
+  private static final String UPPER_CASE_MILLISECONDS = "MILLISECONDS";
+  private static final String UPPER_CASE_MILLIS_SINCE_EPOCH = "MILLISSINCEEPOCH";
+  private static final String UPPER_CASE_MILLISECONDS_SINCE_EPOCH = "MILLISECONDSSINCEEPOCH";
+  private static final String UPPER_CASE_MICROSECONDS = "MICROSECONDS";
+  private static final String UPPER_CASE_MICROS_SINCE_EPOCH = "MICROSSINCEEPOCH";
+  private static final String UPPER_CASE_MICROSECONDS_SINCE_EPOCH = "MICROSECONDSSINCEEPOCH";
+  private static final String UPPER_CASE_NANOSECONDS = "NANOSECONDS";
+  private static final String UPPER_CASE_NANOS_SINCE_EPOCH = "NANOSSINCEEPOCH";
+  private static final String UPPER_CASE_NANOSECONDS_SINCE_EPOCH = "NANOSECONDSSINCEEPOCH";
 
   private static final long VALID_MIN_TIME_MILLIS = new DateTime(1971, 1, 1, 0, 0, 0, 0, DateTimeZone.UTC).getMillis();
   private static final long VALID_MAX_TIME_MILLIS = new DateTime(2071, 1, 1, 0, 0, 0, 0, DateTimeZone.UTC).getMillis();
 
-  static {
-    for (TimeUnit timeUnit : TimeUnit.values()) {
-      TIME_UNIT_MAP.put(timeUnit.name(), timeUnit);
-    }
-  }
-
   /**
-   * Converts timeValue in timeUnitString to milliseconds
-   * @param timeUnitString the time unit string to convert, such as DAYS or SECONDS
-   * @param timeValue the time value to convert to milliseconds
-   * @return corresponding value in milliseconds or LONG.MIN_VALUE if timeUnitString is invalid
-   *         Returning LONG.MIN_VALUE gives consistent beahvior with the java library
-   */
-  public static long toMillis(String timeUnitString, String timeValue) {
-    TimeUnit timeUnit = timeUnitFromString(timeUnitString);
-    return (timeUnit == null) ? Long.MIN_VALUE : timeUnit.toMillis(Long.parseLong(timeValue));
-  }
-
-  /**
-   * Turns a time unit string into a TimeUnit, ignoring case.
+   * Converts a time unit string into {@link TimeUnit}, ignoring case. For {@code null} or empty time unit string,
+   * returns {@code null}.
+   * <p>Besides the standard time unit, also support the following time unit strings:
+   * <ul>
+   *   <li>"daysSinceEpoch" -> DAYS</li>
+   *   <li>"hoursSinceEpoch" -> HOURS</li>
+   *   <li>"minutesSinceEpoch" -> MINUTES</li>
+   *   <li>"secondsSinceEpoch" -> SECONDS</li>
+   *   <li>"millisSinceEpoch"/"millisecondsSinceEpoch" -> MILLISECONDS</li>
+   *   <li>"microsSinceEpoch"/"microsecondsSinceEpoch" -> MICROSECONDS</li>
+   *   <li>"nanosSinceEpoch"/"nanosecondsSinceEpoch" -> NANOSECONDS</li>
+   * </ul>
    *
-   * @param timeUnitString The time unit string to convert, such as DAYS or SECONDS.
-   * @return The corresponding time unit or null if it doesn't exist
+   * @param timeUnitString The time unit string to convert, e.g. "DAYS" or "SECONDS"
+   * @return The corresponding {@link TimeUnit}
    */
-  public static TimeUnit timeUnitFromString(String timeUnitString) {
-    if (timeUnitString == null) {
+  @Nullable
+  public static TimeUnit timeUnitFromString(@Nullable String timeUnitString) {
+    // NOTE: for backward-compatibility, return null if time unit string is null or empty
+    if (timeUnitString == null || timeUnitString.isEmpty()) {
       return null;
-    } else {
-      return TIME_UNIT_MAP.get(timeUnitString.toUpperCase());
+    }
+    switch (timeUnitString.toUpperCase()) {
+      case UPPER_CASE_DAYS:
+      case UPPER_CASE_DAYS_SINCE_EPOCH:
+        return TimeUnit.DAYS;
+      case UPPER_CASE_HOURS:
+      case UPPER_CASE_HOURS_SINCE_EPOCH:
+        return TimeUnit.HOURS;
+      case UPPER_CASE_MINUTES:
+      case UPPER_CASE_MINUTES_SINCE_EPOCH:
+        return TimeUnit.MINUTES;
+      case UPPER_CASE_SECONDS:
+      case UPPER_CASE_SECONDS_SINCE_EPOCH:
+        return TimeUnit.SECONDS;
+      case UPPER_CASE_MILLISECONDS:
+      case UPPER_CASE_MILLIS_SINCE_EPOCH:
+      case UPPER_CASE_MILLISECONDS_SINCE_EPOCH:
+        return TimeUnit.MILLISECONDS;
+      case UPPER_CASE_MICROSECONDS:
+      case UPPER_CASE_MICROS_SINCE_EPOCH:
+      case UPPER_CASE_MICROSECONDS_SINCE_EPOCH:
+        return TimeUnit.MICROSECONDS;
+      case UPPER_CASE_NANOSECONDS:
+      case UPPER_CASE_NANOS_SINCE_EPOCH:
+      case UPPER_CASE_NANOSECONDS_SINCE_EPOCH:
+        return TimeUnit.NANOSECONDS;
+      default:
+        throw new IllegalArgumentException("Unsupported time unit: " + timeUnitString);
     }
   }
 
   /**
-   * Given a time value, returns true if the value is between a valid range, false otherwise
-   * The current valid range used is between beginning of 1971 and beginning of 2071.
-   *
-   * @param timeValueInMillis
-   * @return True if time value in valid range, false otherwise.
+   * Given a time value, returns true if the value is between a valid range, false otherwise.
+   * <p>The current valid range used is between beginning of 1971 and beginning of 2071.
    */
   public static boolean timeValueInValidRange(long timeValueInMillis) {
     return (VALID_MIN_TIME_MILLIS <= timeValueInMillis && timeValueInMillis <= VALID_MAX_TIME_MILLIS);
   }
 
   /**
-   * Return the minimum valid time in milliseconds.
-   * @return
+   * Returns the minimum valid time in milliseconds.
    */
   public static long getValidMinTimeMillis() {
     return VALID_MIN_TIME_MILLIS;
@@ -88,7 +120,6 @@ public class TimeUtils {
 
   /**
    * Returns the maximum valid time in milliseconds.
-   * @return
    */
   public static long getValidMaxTimeMillis() {
     return VALID_MAX_TIME_MILLIS;
@@ -104,7 +135,7 @@ public class TimeUtils {
    * minutes (m) and seconds (s).
    *
    * @param timeStr string representing the duration
-   * @return the corresponding time coverted to milliseconds
+   * @return the corresponding time converted to milliseconds
    * @throws IllegalArgumentException if the string does not conform to the expected format
    */
   public static Long convertPeriodToMillis(String timeStr) {
@@ -135,5 +166,20 @@ public class TimeUtils {
       periodStr = PERIOD_FORMATTER.print(p);
     }
     return periodStr;
+  }
+
+  /**
+   * Verify that start and end time (should be in milliseconds from epoch) of the segment
+   * are in valid range.
+   * @param startMillis start time (in milliseconds)
+   * @param endMillis end time (in milliseconds)
+   * @return true if start and end time are in range, false otherwise
+   *
+   * Note: this function assumes that given times are in milliseconds. The
+   * caller should take care of converting to millis from epoch before
+   * trying to validate the times.
+   */
+  public static boolean checkSegmentTimeValidity(final long startMillis, final long endMillis) {
+    return timeValueInValidRange(startMillis) && timeValueInValidRange(endMillis);
   }
 }

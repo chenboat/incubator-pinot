@@ -86,9 +86,9 @@ public class SimpleMinionClusterIntegrationTest extends ClusterTest {
     Map<String, Map<String, String>> taskTypeConfigsMap = new HashMap<>();
     taskTypeConfigsMap.put(TestTaskGenerator.TASK_TYPE, Collections.emptyMap());
     taskConfig.setTaskTypeConfigsMap(taskTypeConfigsMap);
-    addOfflineTable(TABLE_NAME_1, null, null, null, null, null, SegmentVersion.v1, null, null, taskConfig);
-    addOfflineTable(TABLE_NAME_2, null, null, null, null, null, SegmentVersion.v1, null, null, taskConfig);
-    addOfflineTable(TABLE_NAME_3, null, null, null, null, null, SegmentVersion.v1, null, null, null);
+    addOfflineTable(TABLE_NAME_1, null, null, null, null, null, SegmentVersion.v1, null, null, taskConfig, null, null);
+    addOfflineTable(TABLE_NAME_2, null, null, null, null, null, SegmentVersion.v1, null, null, taskConfig, null, null);
+    addOfflineTable(TABLE_NAME_3, null, null, null, null, null, SegmentVersion.v1, null, null, null, null, null);
 
     _helixTaskResourceManager = _controllerStarter.getHelixTaskResourceManager();
     _taskManager = _controllerStarter.getTaskManager();
@@ -176,7 +176,10 @@ public class SimpleMinionClusterIntegrationTest extends ClusterTest {
     }, 60_000L, "Failed to get all tasks COMPLETED");
 
     // Delete the task queue
-    _helixTaskResourceManager.deleteTaskQueue(TestTaskGenerator.TASK_TYPE);
+    // Note: Comment out the api for now since there is a known race condition
+    // where helix controller might write a deleted workflow back to ZK because it's still caching it.
+    // TODO: revert this after merging the fix
+//    _helixTaskResourceManager.deleteTaskQueue(TestTaskGenerator.TASK_TYPE);
   }
 
   @AfterClass

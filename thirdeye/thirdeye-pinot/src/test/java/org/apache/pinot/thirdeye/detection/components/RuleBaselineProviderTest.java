@@ -16,6 +16,9 @@
 
 package org.apache.pinot.thirdeye.detection.components;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import org.apache.pinot.thirdeye.dataframe.DataFrame;
 import org.apache.pinot.thirdeye.dataframe.DoubleSeries;
 import org.apache.pinot.thirdeye.dataframe.util.MetricSlice;
@@ -23,9 +26,6 @@ import org.apache.pinot.thirdeye.detection.DefaultInputDataFetcher;
 import org.apache.pinot.thirdeye.detection.InputDataFetcher;
 import org.apache.pinot.thirdeye.detection.MockDataProvider;
 import org.apache.pinot.thirdeye.detection.spec.RuleBaselineProviderSpec;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 import org.testng.Assert;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
@@ -49,7 +49,7 @@ public class RuleBaselineProviderTest {
     MetricSlice slice2Wow = MetricSlice.from(1L, 1537920000000L, 1538006400000L);
     Map<MetricSlice, DataFrame> aggregates = new HashMap<>();
     aggregates.put(slice1Wow, DataFrame.builder(COL_TIME + ":LONG", COL_VALUE + ":DOUBLE")
-        .append(-1, 100)
+        .append(-1, 150)
         .build()
         .setIndex(COL_TIME));
     aggregates.put(slice2Wow, DataFrame.builder(COL_TIME + ":LONG", COL_VALUE + ":DOUBLE")

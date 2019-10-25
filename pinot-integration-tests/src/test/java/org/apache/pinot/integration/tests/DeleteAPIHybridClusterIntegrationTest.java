@@ -19,13 +19,18 @@
 package org.apache.pinot.integration.tests;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import junit.framework.Assert;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
 import org.apache.pinot.common.metadata.segment.OfflineSegmentZKMetadata;
 import org.apache.pinot.common.metadata.segment.RealtimeSegmentZKMetadata;
 import org.apache.pinot.common.utils.CommonConstants;
 import org.apache.pinot.common.utils.JsonUtils;
+import org.apache.pinot.hadoop.job.ControllerRestApi;
+import org.apache.pinot.hadoop.job.DefaultControllerRestApi;
+import org.apache.pinot.hadoop.utils.PushLocation;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
@@ -40,6 +45,16 @@ import org.testng.annotations.Test;
 public class DeleteAPIHybridClusterIntegrationTest extends HybridClusterIntegrationTest {
   private String TABLE_NAME;
   private long nOfflineRows;
+
+  private static void removeValue(JsonNode jsonArray, String value) {
+    Iterator<JsonNode> elements = jsonArray.elements();
+    while (elements.hasNext()) {
+      if (elements.next().asText().equals(value)) {
+        elements.remove();
+        return;
+      }
+    }
+  }
 
   @BeforeClass
   public void setUp()
@@ -96,6 +111,10 @@ public class DeleteAPIHybridClusterIntegrationTest extends HybridClusterIntegrat
 
   @Override // Leaving this out because it is done in the superclass
   public void testQueriesFromQueryFile() {
+  }
+
+  @Override // Leaving this out because it is done in the superclass
+  public void testSqlQueriesFromQueryFile() {
   }
 
   @Override // Leaving this out because it is done in the superclass
@@ -237,8 +256,26 @@ public class DeleteAPIHybridClusterIntegrationTest extends HybridClusterIntegrat
         forSegmentListAPIWithTableType(TABLE_NAME, CommonConstants.Helix.TableType.OFFLINE.toString()));
     JsonNode offlineSegmentsListReturn =
         getSegmentsFromJsonSegmentAPI(postDeleteSegmentList, CommonConstants.Helix.TableType.OFFLINE.toString());
+
+    // Get all segments
+    PushLocation pushLocation = new PushLocation("localhost", 18998);
+    List<PushLocation> pushLocations = new ArrayList<>();
+    pushLocations.add(pushLocation);
+    ControllerRestApi controllerRestApi = new DefaultControllerRestApi(pushLocations, "mytable");
+    List<String> allSegments = controllerRestApi.getAllSegments("OFFLINE");
+    Assert.assertEquals(allSegments.size(), offlineSegmentsListReturn.size());
+
     removeValue(offlineSegmentsList, removedSegment);
     Assert.assertEquals(offlineSegmentsListReturn, offlineSegmentsList);
+
+    // Test Delete one more segment
+    String segmentUri = allSegments.get(0);
+    List<String> deleteSegmentUris = new ArrayList<>();
+    deleteSegmentUris.add(segmentUri);
+    controllerRestApi.deleteSegmentUris(deleteSegmentUris);
+    allSegments.remove(0);
+    List<String> postDelete = controllerRestApi.getAllSegments("OFFLINE");
+    Assert.assertEquals(postDelete.size(), allSegments.size());
 
     // Testing Delete All API here
     sendGetRequest(_controllerRequestURLBuilder.
@@ -277,17 +314,7 @@ public class DeleteAPIHybridClusterIntegrationTest extends HybridClusterIntegrat
 
   private void repushOfflineSegments()
       throws Exception {
-    uploadSegments(_tarDir);
+    uploadSegments(getTableName(), _tarDir);
     waitForNumRows(nOfflineRows, CommonConstants.Helix.TableType.OFFLINE);
-  }
-
-  private static void removeValue(JsonNode jsonArray, String value) {
-    Iterator<JsonNode> elements = jsonArray.elements();
-    while (elements.hasNext()) {
-      if (elements.next().asText().equals(value)) {
-        elements.remove();
-        return;
-      }
-    }
   }
 }

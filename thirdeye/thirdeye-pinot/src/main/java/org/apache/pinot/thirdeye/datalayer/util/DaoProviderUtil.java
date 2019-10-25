@@ -22,6 +22,7 @@ package org.apache.pinot.thirdeye.datalayer.util;
 import com.google.common.base.CaseFormat;
 import com.google.inject.AbstractModule;
 import com.google.inject.Provides;
+import io.dropwizard.configuration.YamlConfigurationFactory;
 import org.apache.pinot.thirdeye.datalayer.ScriptRunner;
 import org.apache.pinot.thirdeye.datalayer.bao.jdbc.AbstractManagerImpl;
 import org.apache.pinot.thirdeye.datalayer.dto.AbstractDTO;
@@ -39,6 +40,7 @@ import org.apache.pinot.thirdeye.datalayer.entity.DetectionAlertConfigIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.DetectionConfigIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.DetectionStatusIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.EntityToEntityMappingIndex;
+import org.apache.pinot.thirdeye.datalayer.entity.EvaluationIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.EventIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.GenericJsonEntity;
 import org.apache.pinot.thirdeye.datalayer.entity.GroupedAnomalyResultsIndex;
@@ -51,13 +53,10 @@ import org.apache.pinot.thirdeye.datalayer.entity.RawAnomalyResultIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.RootcauseSessionIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.SessionIndex;
 import org.apache.pinot.thirdeye.datalayer.entity.TaskIndex;
-import io.dropwizard.configuration.ConfigurationFactory;
 import io.dropwizard.jackson.Jackson;
 import java.io.File;
-import java.io.FileReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.net.URL;
 import java.sql.Connection;
 import javax.validation.Validation;
 import org.apache.tomcat.jdbc.pool.DataSource;
@@ -108,7 +107,6 @@ public abstract class DaoProviderUtil {
 
         InputStream createSchema = DaoProviderUtil.class.getResourceAsStream("/schema/create-schema.sql");
         scriptRunner.runScript(new InputStreamReader(createSchema));
-
       } catch (Exception e) {
         LOG.error("Could not create database schema. Attempting to use existing.", e);
       }
@@ -126,8 +124,8 @@ public abstract class DaoProviderUtil {
   }
 
   public static PersistenceConfig createConfiguration(File configFile) {
-    ConfigurationFactory<PersistenceConfig> factory =
-        new ConfigurationFactory<>(PersistenceConfig.class,
+    YamlConfigurationFactory<PersistenceConfig> factory =
+        new YamlConfigurationFactory<>(PersistenceConfig.class,
             Validation.buildDefaultValidatorFactory().getValidator(), Jackson.newObjectMapper(),
             "");
     PersistenceConfig configuration;
@@ -206,7 +204,8 @@ public abstract class DaoProviderUtil {
             convertCamelCaseToUnderscore(DetectionConfigIndex.class.getSimpleName()));
         entityMappingHolder.register(conn, DetectionAlertConfigIndex.class,
             convertCamelCaseToUnderscore(DetectionAlertConfigIndex.class.getSimpleName()));
-
+        entityMappingHolder.register(conn, EvaluationIndex.class,
+            convertCamelCaseToUnderscore(EvaluationIndex.class.getSimpleName()));
       } catch (Exception e) {
         throw new RuntimeException(e);
       }

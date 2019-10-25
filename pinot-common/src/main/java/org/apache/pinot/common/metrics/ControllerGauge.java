@@ -45,11 +45,14 @@ public enum ControllerGauge implements AbstractMetrics.Gauge {
   DISABLED_TABLE_COUNT("TableCount", true),
   PERIODIC_TASK_NUM_TABLES_PROCESSED("PeriodicTaskNumTablesProcessed", true),
 
-  // Number of extra live instances needed
-  SHORT_OF_LIVE_INSTANCES("ShortOfLiveInstances", false),
+  // Pinot controller leader
+  PINOT_CONTROLLER_LEADER("PinotControllerLeader", true),
 
-  // Estimated size of realtime table
-  REALTIME_TABLE_ESTIMATED_SIZE("RealtimeTableEstimatedSize", false),
+  // Pinot controller resource enabled
+  PINOT_LEAD_CONTROLLER_RESOURCE_ENABLED("PinotLeadControllerResourceEnabled", true),
+
+  // Number of partitions for which current controller becomes the leader
+  CONTROLLER_LEADER_PARTITION_COUNT("ControllerLeaderPartitionCount", true),
 
   // Estimated size of offline table
   OFFLINE_TABLE_ESTIMATED_SIZE("OfflineTableEstimatedSize", false),

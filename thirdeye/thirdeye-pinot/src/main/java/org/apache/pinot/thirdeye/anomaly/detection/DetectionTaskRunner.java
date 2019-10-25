@@ -52,8 +52,7 @@ import java.util.List;
 import java.util.Properties;
 
 import java.util.Set;
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.lang.NullArgumentException;
+import org.apache.commons.collections4.CollectionUtils;
 import org.joda.time.DateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,6 +60,7 @@ import org.slf4j.LoggerFactory;
 import static org.apache.pinot.thirdeye.anomaly.utils.ThirdeyeMetricsUtil.*;
 
 
+@Deprecated
 public class DetectionTaskRunner implements TaskRunner {
 
   private static final Logger LOG = LoggerFactory.getLogger(DetectionTaskRunner.class);
@@ -114,7 +114,7 @@ public class DetectionTaskRunner implements TaskRunner {
 
     if (datasetConfig == null) {
       LOG.error("Dataset [" + dataset + "] is not found");
-      throw new NullArgumentException(
+      throw new IllegalArgumentException(
           "Dataset [" + dataset + "] is not found with function : " + anomalyFunctionSpec
               .toString());
     }

@@ -20,14 +20,18 @@ package org.apache.pinot.core.plan;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.apache.pinot.common.request.BrokerRequest;
+import org.apache.pinot.common.utils.CommonConstants.Broker.Request;
 import org.apache.pinot.core.common.Operator;
 import org.apache.pinot.core.operator.CombineGroupByOperator;
+import org.apache.pinot.core.operator.CombineGroupByOrderByOperator;
 import org.apache.pinot.core.operator.CombineOperator;
 import org.apache.pinot.core.query.exception.BadQueryRequestException;
+import org.apache.pinot.core.util.GroupByUtils;
 import org.apache.pinot.core.util.trace.TraceCallable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,7 +43,12 @@ import org.slf4j.LoggerFactory;
 public class CombinePlanNode implements PlanNode {
   private static final Logger LOGGER = LoggerFactory.getLogger(CombinePlanNode.class);
 
-  private static final int MAX_PLAN_THREADS = Math.min(10, (int) (Runtime.getRuntime().availableProcessors() * .5));
+  /**
+   * MAX_PLAN_THREADS should be >= 1.
+   * Runtime.getRuntime().availableProcessors() may return value < 2 in container based environment, e.g. Kubernetes.
+   */
+  private static final int MAX_PLAN_THREADS =
+      Math.max(1, Math.min(10, (int) (Runtime.getRuntime().availableProcessors() * .5)));
   private static final int MIN_TASKS_PER_THREAD = 10;
   private static final int TIME_OUT_IN_MILLISECONDS_FOR_PARALLEL_RUN = 10_000;
 
@@ -56,6 +65,7 @@ public class CombinePlanNode implements PlanNode {
    * @param brokerRequest Broker request
    * @param executorService Executor service
    * @param timeOutMs Time out in milliseconds for query execution (not for planning phase)
+   * @param numGroupsLimit Limit of number of groups stored in each segment
    */
   public CombinePlanNode(List<PlanNode> planNodes, BrokerRequest brokerRequest, ExecutorService executorService,
       long timeOutMs, int numGroupsLimit) {
@@ -135,6 +145,11 @@ public class CombinePlanNode implements PlanNode {
     // TODO: use the same combine operator for both aggregation and selection query.
     if (_brokerRequest.isSetAggregationsInfo() && _brokerRequest.getGroupBy() != null) {
       // Aggregation group-by query
+      Map<String, String> queryOptions = _brokerRequest.getQueryOptions();
+      // new Combine operator only when GROUP_BY_MODE explicitly set to SQL
+      if (GroupByUtils.isGroupByMode(Request.SQL, queryOptions)) {
+        return new CombineGroupByOrderByOperator(operators, _brokerRequest, _executorService, _timeOutMs);
+      }
       return new CombineGroupByOperator(operators, _brokerRequest, _executorService, _timeOutMs, _numGroupsLimit);
     } else {
       // Selection or aggregation only query

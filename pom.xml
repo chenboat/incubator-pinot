@@ -51,10 +51,11 @@
     <module>pinot-integration-tests</module>
     <module>pinot-distribution</module>
     <module>pinot-minion</module>
-    <module>pinot-filesystem</module>
     <module>pinot-hadoop-filesystem</module>
     <module>pinot-azure-filesystem</module>
     <module>pinot-orc</module>
+    <module>pinot-parquet</module>
+    <module>pinot-connectors</module>
   </modules>
 
   <licenses>
@@ -116,9 +117,8 @@
     <SKIP_INTEGRATION_TESTS>true</SKIP_INTEGRATION_TESTS>
     <!-- Configuration for unit/integration tests section 1 of 3 (properties) ENDS HERE.-->
     <avro.version>1.7.6</avro.version>
-    <helix.version>0.8.2</helix.version>
-    <!-- jfim: for Kafka 0.9.0.0, use zkclient 0.7 -->
-    <kafka.version>0.9.0.1</kafka.version>
+    <parquet.version>1.8.0</parquet.version>
+    <helix.version>0.8.4</helix.version>
     <zkclient.version>0.7</zkclient.version>
     <jackson.version>2.9.8</jackson.version>
     <async-http-client.version>1.9.21</async-http-client.version>
@@ -126,17 +126,37 @@
     <swagger.version>1.5.16</swagger.version>
     <hadoop.version>2.7.0</hadoop.version>
     <antlr.version>4.6</antlr.version>
+    <calcite.version>1.19.0</calcite.version>
     <!-- commons-configuration, hadoop-common, hadoop-client use commons-lang -->
     <commons-lang.version>2.6</commons-lang.version>
     <!-- pinot-common, commons-configuration, hadoop-common, hadoop-client use commons-logging-->
     <commons-logging.version>1.2</commons-logging.version>
     <snappy-java.version>1.1.1.7</snappy-java.version>
+    <log4j.version>2.11.2</log4j.version>
 
     <!-- Sets the VM argument line used when unit tests are run. -->
     <argLine>-Xms4g -Xmx4g -XX:MaxPermSize=512m -XX:MaxDirectMemorySize=10g</argLine>
+
+    <!-- handle kafka imports
+    kafka dependency is still explicitly defined in pinot-integration-tests, pinot-tools and pinot-perf pom files.
+    To change kafka connector dependency, we only need to update this version number config.
+    TODO: figure out a way to inject kafka dependency instead of explicitly setting the kafka module dependency -->
+    <kafka.version>0.9</kafka.version>
   </properties>
 
   <profiles>
+    <profile>
+      <id>kafka-2.0</id>
+      <activation>
+        <property>
+          <name>kafka.version</name>
+          <value>2.0</value>
+        </property>
+      </activation>
+      <properties>
+        <kafka.version>2.0</kafka.version>
+      </properties>
+    </profile>
     <profile>
       <id>travis</id>
       <activation>
@@ -144,8 +164,7 @@
       </activation>
       <properties>
         <argLine>-Xms4g -Xmx4g -XX:MaxPermSize=512m -XX:MaxDirectMemorySize=10g
-          -Dlog4j.configuration=log4j-fatal-only.properties
-          -Djava.util.logging.config.file=logging-severe-only.properties
+          -Dlog4j2.configurationFile=log4j2-fatal-only.xml
         </argLine>
       </properties>
     </profile>
@@ -185,30 +204,6 @@
       </build>
     </profile>
   </profiles>
-
-  <repositories>
-    <repository>
-      <id>jboss.org</id>
-      <url>http://repository.jboss.org</url>
-      <releases>
-        <enabled>true</enabled>
-      </releases>
-      <snapshots>
-        <enabled>false</enabled>
-      </snapshots>
-    </repository>
-    <repository>
-      <id>chibi</id>
-      <url>http://www.chibi.ubc.ca/maven2/</url>
-      <releases>
-        <enabled>true</enabled>
-      </releases>
-      <snapshots>
-        <enabled>false</enabled>
-      </snapshots>
-    </repository>
-  </repositories>
-
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -273,11 +268,6 @@
       </dependency>
       <dependency>
         <groupId>org.apache.pinot</groupId>
-        <artifactId>pinot-filesystem</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.apache.pinot</groupId>
         <artifactId>pinot-hadoop-filesystem</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -325,12 +315,22 @@
       <dependency>
         <groupId>org.roaringbitmap</groupId>
         <artifactId>RoaringBitmap</artifactId>
-        <version>0.5.10</version>
+        <version>0.8.0</version>
       </dependency>
       <dependency>
         <groupId>com.101tec</groupId>
         <artifactId>zkclient</artifactId>
         <version>${zkclient.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>com.google.guava</groupId>
@@ -386,7 +386,7 @@
       <dependency>
         <groupId>it.unimi.dsi</groupId>
         <artifactId>fastutil</artifactId>
-        <version>6.5.16</version>
+        <version>8.2.3</version>
       </dependency>
       <dependency>
         <groupId>joda-time</groupId>
@@ -397,6 +397,11 @@
         <groupId>org.apache.avro</groupId>
         <artifactId>avro</artifactId>
         <version>${avro.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.parquet</groupId>
+        <artifactId>parquet-avro</artifactId>
+        <version>${parquet.version}</version>
       </dependency>
       <dependency>
         <groupId>org.xerial.snappy</groupId>
@@ -411,7 +416,7 @@
       <dependency>
         <groupId>org.apache.thrift</groupId>
         <artifactId>libthrift</artifactId>
-        <version>0.9.1</version>
+        <version>0.12.0</version>
       </dependency>
       <dependency>
         <groupId>javax.servlet</groupId>
@@ -423,16 +428,6 @@
         <groupId>javax.ws.rs</groupId>
         <artifactId>javax.ws.rs-api</artifactId>
         <version>2.0.1</version>
-      </dependency>
-      <dependency>
-        <groupId>org.slf4j</groupId>
-        <artifactId>slf4j-api</artifactId>
-        <version>1.7.7</version>
-      </dependency>
-      <dependency>
-        <groupId>org.slf4j</groupId>
-        <artifactId>slf4j-log4j12</artifactId>
-        <version>1.7.7</version>
       </dependency>
       <dependency>
         <groupId>javax.validation</groupId>
@@ -452,12 +447,47 @@
             <groupId>org.jboss.netty</groupId>
             <artifactId>netty</artifactId>
           </exclusion>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
+
+      <!-- log4j2 related dependencies -->
       <dependency>
-        <groupId>log4j</groupId>
-        <artifactId>log4j</artifactId>
-        <version>1.2.17</version>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>1.7.25</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.logging.log4j</groupId>
+        <artifactId>log4j-api</artifactId>
+        <version>${log4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.logging.log4j</groupId>
+        <artifactId>log4j-core</artifactId>
+        <version>${log4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.logging.log4j</groupId>
+        <artifactId>log4j-slf4j-impl</artifactId>
+        <version>${log4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.logging.log4j</groupId>
+        <artifactId>log4j-1.2-api</artifactId>
+        <version>${log4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.lmax</groupId>
+        <artifactId>disruptor</artifactId>
+        <version>3.3.4</version>
       </dependency>
       <dependency>
         <groupId>com.ning</groupId>
@@ -479,6 +509,16 @@
         <groupId>org.apache.zookeeper</groupId>
         <artifactId>zookeeper</artifactId>
         <version>3.4.11</version>
+        <exclusions>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>commons-beanutils</groupId>
@@ -538,13 +578,6 @@
         <version>${jackson.version}</version>
       </dependency>
 
-      <!-- Kafka  -->
-      <dependency>
-        <groupId>org.apache.kafka</groupId>
-        <artifactId>kafka_2.10</artifactId>
-        <version>${kafka.version}</version>
-      </dependency>
-
       <!-- Hadoop  -->
       <dependency>
         <groupId>org.apache.hadoop</groupId>
@@ -567,12 +600,30 @@
             <groupId>com.sun.jersey</groupId>
             <artifactId>jersey-json</artifactId>
           </exclusion>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
         </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-minicluster</artifactId>
         <version>${hadoop.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.hadoop</groupId>
@@ -595,17 +646,56 @@
             <groupId>com.sun.jersey</groupId>
             <artifactId>jersey-json</artifactId>
           </exclusion>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
         </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-aws</artifactId>
+        <version>${hadoop.version}</version>
       </dependency>
       <dependency>
         <groupId>org.apache.orc</groupId>
         <artifactId>orc-core</artifactId>
         <version>1.5.2</version>
+        <exclusions>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.orc</groupId>
         <artifactId>orc-mapreduce</artifactId>
         <version>1.5.2</version>
+        <exclusions>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-log4j12</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.avro</groupId>
+        <artifactId>avro-mapred</artifactId>
+        <version>1.7.4</version>
+        <classifier>hadoop2</classifier>
       </dependency>
       <dependency>
         <groupId>org.codehaus.jackson</groupId>
@@ -646,6 +736,85 @@
         <groupId>org.antlr</groupId>
         <artifactId>antlr4-runtime</artifactId>
         <version>${antlr.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.calcite</groupId>
+        <artifactId>calcite-core</artifactId>
+        <version>${calcite.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.calcite.avatica</groupId>
+            <artifactId>avatica-metrics</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpclient</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpcore</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-dbcp2</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.esri.geometry</groupId>
+            <artifactId>esri-geometry-api</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.yahoo.datasketches</groupId>
+            <artifactId>sketches-core</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>net.hydromatic</groupId>
+            <artifactId>aggdesigner-algorithm</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.codehaus.janino</groupId>
+            <artifactId>janino</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.codehaus.janino</groupId>
+            <artifactId>commons-compiler</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.google.code.findbugs</groupId>
+            <artifactId>jsr305</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>com.jcabi</groupId>
@@ -771,12 +940,6 @@
         <groupId>net.sf.jopt-simple</groupId>
         <artifactId>jopt-simple</artifactId>
         <version>4.6</version>
-      </dependency>
-      <!-- kafka_2.10 & larray use scala-library -->
-      <dependency>
-        <groupId>org.scala-lang</groupId>
-        <artifactId>scala-library</artifactId>
-        <version>2.10.5</version>
       </dependency>
       <dependency>
         <groupId>commons-lang</groupId>
@@ -929,6 +1092,7 @@
             <systemPropertyVariables>
               <zookeeper.forceSync>no</zookeeper.forceSync>
             </systemPropertyVariables>
+            <trimStackTrace>false</trimStackTrace>
             <reportFormat>plain</reportFormat>
           </configuration>
         </plugin>
@@ -1006,6 +1170,8 @@
           <!-- Excludes integration tests when unit tests are run. -->
           <excludes>
             <exclude>**/*IT.java</exclude>
+            <!-- TODO: re-enable the Minion tests when upgrading to Helix 0.9.1 -->
+            <exclude>**/*MinionClusterIntegrationTest.java</exclude>
           </excludes>
           <forkCount>1</forkCount>
           <reuseForks>false</reuseForks>

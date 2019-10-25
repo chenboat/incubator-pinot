@@ -50,6 +50,7 @@ public class MemoryEstimator {
   private static final String STATS_FILE_COPY_NAME = "stats.copy.ser";
 
   private final TableConfig _tableConfig;
+  private final String _tableNameWithType;
   private final File _sampleCompletedSegment;
   private final long _sampleSegmentConsumedSeconds;
   private final long _maxUsableHostMemory;
@@ -58,6 +59,7 @@ public class MemoryEstimator {
   private long _sampleCompletedSegmentSizeBytes;
   private Set<String> _invertedIndexColumns = new HashSet<>();
   private Set<String> _noDictionaryColumns = new HashSet<>();
+  private Set<String> _varLengthDictionaryColumns = new HashSet<>();
   int _avgMultiValues;
   private File _tableDataDir;
 
@@ -68,6 +70,7 @@ public class MemoryEstimator {
   public MemoryEstimator(TableConfig tableConfig, File sampleCompletedSegment, long sampleSegmentConsumedSeconds, long maxUsableHostMemory) {
     _maxUsableHostMemory = maxUsableHostMemory;
     _tableConfig = tableConfig;
+    _tableNameWithType = tableConfig.getTableName();
     _sampleCompletedSegment = sampleCompletedSegment;
     _sampleSegmentConsumedSeconds = sampleSegmentConsumedSeconds;
 
@@ -81,12 +84,15 @@ public class MemoryEstimator {
     if (CollectionUtils.isNotEmpty(_tableConfig.getIndexingConfig().getNoDictionaryColumns())) {
       _noDictionaryColumns.addAll(_tableConfig.getIndexingConfig().getNoDictionaryColumns());
     }
+    if (CollectionUtils.isNotEmpty(_tableConfig.getIndexingConfig().getVarLengthDictionaryColumns())) {
+      _varLengthDictionaryColumns.addAll(_tableConfig.getIndexingConfig().getVarLengthDictionaryColumns());
+    }
     if (CollectionUtils.isNotEmpty(_tableConfig.getIndexingConfig().getInvertedIndexColumns())) {
       _invertedIndexColumns.addAll(_tableConfig.getIndexingConfig().getInvertedIndexColumns());
     }
     _avgMultiValues = getAvgMultiValues();
 
-    _tableDataDir = new File(TMP_DIR, _segmentMetadata.getTableName());
+    _tableDataDir = new File(TMP_DIR, _tableNameWithType);
     try {
       FileUtils.deleteDirectory(_tableDataDir);
     } catch (IOException e) {
@@ -119,10 +125,13 @@ public class MemoryEstimator {
     // create a config
     RealtimeSegmentConfig.Builder realtimeSegmentConfigBuilder =
         new RealtimeSegmentConfig.Builder().setSegmentName(_segmentMetadata.getName())
-            .setStreamName(_segmentMetadata.getTableName()).setSchema(_segmentMetadata.getSchema())
+            .setStreamName(_tableNameWithType).setSchema(_segmentMetadata.getSchema())
             .setCapacity(_segmentMetadata.getTotalDocs()).setAvgNumMultiValues(_avgMultiValues)
-            .setNoDictionaryColumns(_noDictionaryColumns).setInvertedIndexColumns(_invertedIndexColumns)
-            .setRealtimeSegmentZKMetadata(segmentZKMetadata).setOffHeap(true).setMemoryManager(memoryManager)
+            .setNoDictionaryColumns(_noDictionaryColumns)
+            .setVarLengthDictionaryColumns(_varLengthDictionaryColumns)
+            .setInvertedIndexColumns(_invertedIndexColumns)
+            .setRealtimeSegmentZKMetadata(segmentZKMetadata).setOffHeap(true)
+            .setMemoryManager(memoryManager)
             .setStatsHistory(sampleStatsHistory);
 
     // create mutable segment impl
@@ -133,7 +142,7 @@ public class MemoryEstimator {
       GenericRow row = new GenericRow();
       while (segmentRecordReader.hasNext()) {
         segmentRecordReader.next(row);
-        mutableSegmentImpl.index(row);
+        mutableSegmentImpl.index(row, null);
         row.clear();
       }
     } catch (Exception e) {
@@ -217,9 +226,12 @@ public class MemoryEstimator {
 
       RealtimeSegmentConfig.Builder realtimeSegmentConfigBuilder =
           new RealtimeSegmentConfig.Builder().setSegmentName(_segmentMetadata.getName())
-              .setStreamName(_segmentMetadata.getTableName()).setSchema(_segmentMetadata.getSchema())
-              .setCapacity(totalDocs).setAvgNumMultiValues(_avgMultiValues).setNoDictionaryColumns(_noDictionaryColumns)
-              .setInvertedIndexColumns(_invertedIndexColumns).setRealtimeSegmentZKMetadata(segmentZKMetadata)
+              .setStreamName(_tableNameWithType).setSchema(_segmentMetadata.getSchema())
+              .setCapacity(totalDocs).setAvgNumMultiValues(_avgMultiValues)
+              .setNoDictionaryColumns(_noDictionaryColumns)
+              .setVarLengthDictionaryColumns(_varLengthDictionaryColumns)
+              .setInvertedIndexColumns(_invertedIndexColumns)
+              .setRealtimeSegmentZKMetadata(segmentZKMetadata)
               .setOffHeap(true).setMemoryManager(memoryManager).setStatsHistory(statsHistory);
 
       // create mutable segment impl
@@ -316,7 +328,6 @@ public class MemoryEstimator {
     realtimeSegmentZKMetadata.setStartTime(segmentMetadata.getStartTime());
     realtimeSegmentZKMetadata.setEndTime(segmentMetadata.getEndTime());
     realtimeSegmentZKMetadata.setCreationTime(segmentMetadata.getIndexCreationTime());
-    realtimeSegmentZKMetadata.setTableName(segmentMetadata.getTableName());
     realtimeSegmentZKMetadata.setSegmentName(segmentMetadata.getName());
     realtimeSegmentZKMetadata.setTimeUnit(segmentMetadata.getTimeUnit());
     realtimeSegmentZKMetadata.setTotalRawDocs(totalDocs);

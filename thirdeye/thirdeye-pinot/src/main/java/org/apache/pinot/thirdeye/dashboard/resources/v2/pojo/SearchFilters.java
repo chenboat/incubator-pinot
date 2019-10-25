@@ -29,7 +29,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import org.apache.commons.collections.MapUtils;
+import org.apache.commons.collections4.MapUtils;
 import org.apache.pinot.thirdeye.anomaly.classification.ClassificationTaskRunner;
 import org.apache.pinot.thirdeye.anomalydetection.context.AnomalyFeedback;
 import org.apache.pinot.thirdeye.common.dimension.DimensionMap;
@@ -197,8 +197,6 @@ public class SearchFilters {
         String issueType = properties.get(ClassificationTaskRunner.ISSUE_TYPE_KEY);
         passed = passed && checkFilter(issueTypeFilterMap, issueType);
       }
-      // check isChild
-      passed = passed && !mergedAnomalyResultDTO.isChild(); // TODO configurable filter
 
       if (passed) {
         filteredAnomalies.add(mergedAnomalyResultDTO);

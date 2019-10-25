@@ -18,26 +18,20 @@
  */
 package org.apache.pinot.broker.broker.helix;
 
-import java.util.List;
-import org.apache.helix.HelixAdmin;
 import org.apache.helix.HelixDataAccessor;
-import org.apache.helix.HelixManager;
 import org.apache.helix.NotificationContext;
-import org.apache.helix.PropertyKey.Builder;
 import org.apache.helix.ZNRecord;
-import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.model.Message;
 import org.apache.helix.participant.statemachine.StateModel;
 import org.apache.helix.participant.statemachine.StateModelFactory;
 import org.apache.helix.participant.statemachine.StateModelInfo;
 import org.apache.helix.participant.statemachine.Transition;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
-import org.apache.pinot.broker.queryquota.TableQueryQuotaManager;
+import org.apache.pinot.broker.queryquota.HelixExternalViewBasedQueryQuotaManager;
 import org.apache.pinot.broker.routing.HelixExternalViewBasedRouting;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.config.TableConfig;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
-import org.apache.pinot.common.utils.helix.HelixHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,21 +47,18 @@ import static org.apache.pinot.common.utils.CommonConstants.Helix.BROKER_RESOURC
 public class BrokerResourceOnlineOfflineStateModelFactory extends StateModelFactory<StateModel> {
   private static final Logger LOGGER = LoggerFactory.getLogger(BrokerResourceOnlineOfflineStateModelFactory.class);
 
-  private final HelixManager _helixManager;
-  private final HelixAdmin _helixAdmin;
+  private final ZkHelixPropertyStore<ZNRecord> _propertyStore;
+  private final HelixDataAccessor _helixDataAccessor;
   private final HelixExternalViewBasedRouting _helixExternalViewBasedRouting;
-  private final TableQueryQuotaManager _tableQueryQuotaManager;
+  private final HelixExternalViewBasedQueryQuotaManager _helixExternalViewBasedQueryQuotaManager;
 
-  private ZkHelixPropertyStore<ZNRecord> _propertyStore;
-
-  public BrokerResourceOnlineOfflineStateModelFactory(HelixManager helixManager,
-      ZkHelixPropertyStore<ZNRecord> propertyStore, HelixExternalViewBasedRouting helixExternalViewBasedRouting,
-      TableQueryQuotaManager tableQueryQuotaManager) {
-    _helixManager = helixManager;
+  public BrokerResourceOnlineOfflineStateModelFactory(ZkHelixPropertyStore<ZNRecord> propertyStore,
+      HelixDataAccessor helixDataAccessor, HelixExternalViewBasedRouting helixExternalViewBasedRouting,
+      HelixExternalViewBasedQueryQuotaManager helixExternalViewBasedQueryQuotaManager) {
+    _helixDataAccessor = helixDataAccessor;
     _propertyStore = propertyStore;
-    _helixAdmin = helixManager.getClusterManagmentTool();
     _helixExternalViewBasedRouting = helixExternalViewBasedRouting;
-    _tableQueryQuotaManager = tableQueryQuotaManager;
+    _helixExternalViewBasedQueryQuotaManager = helixExternalViewBasedQueryQuotaManager;
   }
 
   public static String getStateModelDef() {
@@ -86,17 +77,14 @@ public class BrokerResourceOnlineOfflineStateModelFactory extends StateModelFact
     public void onBecomeOnlineFromOffline(Message message, NotificationContext context) {
       try {
         LOGGER.info("BrokerResourceOnlineOfflineStateModel.onBecomeOnlineFromOffline() : " + message);
-        Builder keyBuilder = _helixManager.getHelixDataAccessor().keyBuilder();
         String tableName = message.getPartitionName();
-        HelixDataAccessor helixDataAccessor = _helixManager.getHelixDataAccessor();
-        List<InstanceConfig> instanceConfigList = helixDataAccessor.getChildValues(keyBuilder.instanceConfigs());
         TableConfig tableConfig = ZKMetadataProvider.getTableConfig(_propertyStore, tableName);
 
         _helixExternalViewBasedRouting.markDataResourceOnline(tableConfig,
-            HelixHelper.getExternalViewForResource(_helixAdmin, _helixManager.getClusterName(), tableName),
-            instanceConfigList);
-        _tableQueryQuotaManager.initTableQueryQuota(tableConfig, HelixHelper
-            .getExternalViewForResource(_helixAdmin, _helixManager.getClusterName(), BROKER_RESOURCE_INSTANCE));
+            _helixDataAccessor.getProperty(_helixDataAccessor.keyBuilder().externalView(tableName)),
+            _helixDataAccessor.getChildValues(_helixDataAccessor.keyBuilder().instanceConfigs()));
+        _helixExternalViewBasedQueryQuotaManager.initTableQueryQuota(tableConfig,
+            _helixDataAccessor.getProperty(_helixDataAccessor.keyBuilder().externalView(BROKER_RESOURCE_INSTANCE)));
       } catch (Exception e) {
         LOGGER.error("Caught exception during OFFLINE -> ONLINE transition", e);
         Utils.rethrowException(e);
@@ -110,7 +98,7 @@ public class BrokerResourceOnlineOfflineStateModelFactory extends StateModelFact
         LOGGER.info("BrokerResourceOnlineOfflineStateModel.onBecomeOfflineFromOnline() : " + message);
         String tableName = message.getPartitionName();
         _helixExternalViewBasedRouting.markDataResourceOffline(tableName);
-        _tableQueryQuotaManager.dropTableQueryQuota(tableName);
+        _helixExternalViewBasedQueryQuotaManager.dropTableQueryQuota(tableName);
       } catch (Exception e) {
         LOGGER.error("Caught exception during ONLINE -> OFFLINE transition", e);
         Utils.rethrowException(e);
@@ -124,7 +112,7 @@ public class BrokerResourceOnlineOfflineStateModelFactory extends StateModelFact
         LOGGER.info("BrokerResourceOnlineOfflineStateModel.onBecomeDroppedFromOffline() : " + message);
         String tableName = message.getPartitionName();
         _helixExternalViewBasedRouting.markDataResourceOffline(tableName);
-        _tableQueryQuotaManager.dropTableQueryQuota(tableName);
+        _helixExternalViewBasedQueryQuotaManager.dropTableQueryQuota(tableName);
       } catch (Exception e) {
         LOGGER.error("Caught exception during OFFLINE -> DROPPED transition", e);
         Utils.rethrowException(e);
@@ -138,7 +126,7 @@ public class BrokerResourceOnlineOfflineStateModelFactory extends StateModelFact
         LOGGER.info("BrokerResourceOnlineOfflineStateModel.onBecomeDroppedFromOnline() : " + message);
         String tableName = message.getPartitionName();
         _helixExternalViewBasedRouting.markDataResourceOffline(tableName);
-        _tableQueryQuotaManager.dropTableQueryQuota(tableName);
+        _helixExternalViewBasedQueryQuotaManager.dropTableQueryQuota(tableName);
       } catch (Exception e) {
         LOGGER.error("Caught exception during ONLINE -> DROPPED transition", e);
         Utils.rethrowException(e);

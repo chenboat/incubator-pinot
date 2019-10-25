@@ -103,10 +103,7 @@ export function humanizeScore(f) {
  * Helps with shorthand for repetitive date generation
  */
 export function buildDateEod(unit, type) {
-  if (unit === 1) {
-    return makeTime().startOf('day');
-  }
-  return makeTime().subtract(unit-1, type).startOf('day');
+  return makeTime().subtract(unit, type).startOf('day');
 }
 
 /**
@@ -156,6 +153,17 @@ export function postProps(postData) {
 }
 
 /**
+ * Preps get object
+ * @returns {Object}
+ */
+export function getProps() {
+  return {
+    method: 'get',
+    headers: { 'content-type': 'Application/Json' }
+  };
+}
+
+/**
  * Preps post object for Yaml payload
  * @param {string} text to post
  * @returns {Object}
@@ -176,6 +184,50 @@ export function toIso(dateStr) {
   return moment(Number(dateStr)).toISOString();
 }
 
+/**
+ * Replace all Infinity and NaN with null in array of numbers
+ * @param {Array} timeSeries - time series to modify
+ */
+export function stripNonFiniteValues(timeSeries) {
+  return timeSeries.map(value => {
+    return (isFinite(value) ? value : null);
+  });
+}
+
+/**
+ * The yaml filters formatter. Convert filters in the yaml file in to a legacy filters string
+ * For example, filters = {
+ *   "country": ["us", "cn"],
+ *   "browser": ["chrome"]
+ * }
+ * will be convert into "country=us;country=cn;browser=chrome"
+ *
+ * @method _formatYamlFilter
+ * @param {Map} filters multimap of filters
+ * @return {String} - formatted filters string
+ */
+export function formatYamlFilter(filters) {
+  if (filters){
+    const filterStrings = [];
+    Object.keys(filters).forEach(
+      function(filterKey) {
+        const filter = filters[filterKey];
+        if (filter && Array.isArray(filter)) {
+          filter.forEach(
+            function (filterValue) {
+              filterStrings.push(filterKey + '=' + filterValue);
+            }
+          );
+        } else {
+          filterStrings.push(filterKey + '=' + filter);
+        }
+      }
+    );
+    return filterStrings.join(';');
+  }
+  return '';
+}
+
 export default {
   checkStatus,
   humanizeFloat,
@@ -185,5 +237,8 @@ export default {
   parseProps,
   postProps,
   toIso,
-  postYamlProps
+  stripNonFiniteValues,
+  postYamlProps,
+  formatYamlFilter,
+  getProps
 };

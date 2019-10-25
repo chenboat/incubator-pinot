@@ -21,28 +21,33 @@ package org.apache.pinot.thirdeye.detection.algorithm;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
-import java.util.HashSet;
-import java.util.Set;
-import org.apache.pinot.thirdeye.dataframe.DataFrame;
-import org.apache.pinot.thirdeye.dataframe.util.MetricSlice;
-import org.apache.pinot.thirdeye.datalayer.dto.DetectionConfigDTO;
-import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
-import org.apache.pinot.thirdeye.detection.ConfigUtils;
-import org.apache.pinot.thirdeye.detection.DataProvider;
-import org.apache.pinot.thirdeye.detection.DetectionPipeline;
-import org.apache.pinot.thirdeye.detection.DetectionPipelineResult;
-import org.apache.pinot.thirdeye.detection.DetectionUtils;
-import org.apache.pinot.thirdeye.rootcause.impl.MetricEntity;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-import org.apache.commons.collections.MapUtils;
+import org.apache.commons.collections4.MapUtils;
+import org.apache.pinot.thirdeye.dataframe.DataFrame;
+import org.apache.pinot.thirdeye.dataframe.util.MetricSlice;
+import org.apache.pinot.thirdeye.datalayer.dto.DetectionConfigDTO;
+import org.apache.pinot.thirdeye.datalayer.dto.EvaluationDTO;
+import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
+import org.apache.pinot.thirdeye.detection.ConfigUtils;
+import org.apache.pinot.thirdeye.detection.DataProvider;
+import org.apache.pinot.thirdeye.detection.DetectionPipeline;
+import org.apache.pinot.thirdeye.detection.DetectionPipelineException;
+import org.apache.pinot.thirdeye.detection.DetectionPipelineResult;
+import org.apache.pinot.thirdeye.detection.DetectionUtils;
+import org.apache.pinot.thirdeye.detection.PredictionResult;
+import org.apache.pinot.thirdeye.detection.spi.exception.DetectorDataInsufficientException;
+import org.apache.pinot.thirdeye.rootcause.impl.MetricEntity;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.Period;
@@ -70,6 +75,16 @@ public class DimensionWrapper extends DetectionPipeline {
 
   private static final String PROP_CLASS_NAME = "className";
 
+  // Max number of dimension combinations we can handle.
+  private static final int MAX_DIMENSION_COMBINATIONS = 20000;
+
+  // Stop running if the first several dimension combinations all failed.
+  private static final int EARLY_STOP_THRESHOLD = 10;
+
+  // the max number of dimensions to calculate the evaluations for
+  // this is to prevent storing the evaluations for too many dimensions
+  private static final int DIMENSION_EVALUATION_LIMIT = 5;
+
   private final String metricUrn;
   private final int k;
   private final double minContribution;
@@ -86,6 +101,9 @@ public class DimensionWrapper extends DetectionPipeline {
   protected final String nestedMetricUrnKey;
   protected final List<String> dimensions;
   protected final Collection<String> nestedMetricUrns;
+  // the metric urn to calculate the evaluation metrics for, by default set to top 5 dimensions
+  private final Set<String> evaluationMetricUrns;
+
   protected final List<Map<String, Object>> nestedProperties;
 
   public DimensionWrapper(DataProvider provider, DetectionConfigDTO config, long startTime, long endTime) {
@@ -122,10 +140,15 @@ public class DimensionWrapper extends DetectionPipeline {
     if (minStart.isBefore(this.start)) {
       this.start = minStart;
     }
+    this.evaluationMetricUrns = new HashSet<>();
   }
 
-  @Override
-  public DetectionPipelineResult run() throws Exception {
+  /**
+   * Run Dimension explore and return explored metrics.
+   *
+   * @return List of metrics to process.
+   */
+  private List<MetricEntity> dimensionExplore() {
     List<MetricEntity> nestedMetrics = new ArrayList<>();
 
     if (this.metricUrn != null) {
@@ -138,7 +161,7 @@ public class DimensionWrapper extends DetectionPipeline {
       DataFrame aggregates = this.provider.fetchAggregates(Collections.singletonList(slice), this.dimensions).get(slice);
 
       if (aggregates.isEmpty()) {
-        return new DetectionPipelineResult(Collections.<MergedAnomalyResultDTO>emptyList(), -1);
+        return nestedMetrics;
       }
 
       final double total = aggregates.getDoubles(COL_VALUE).sum().fillNull().doubleValue();
@@ -164,9 +187,10 @@ public class DimensionWrapper extends DetectionPipeline {
         aggregates = aggregates.filter(aggregates.getDoubles(COL_VALUE).multiply(multiplier).gte(this.minValueDaily)).dropNull();
       }
 
+      aggregates = aggregates.sortedBy(COL_VALUE).reverse();
       // top k
       if (this.k > 0) {
-        aggregates = aggregates.sortedBy(COL_VALUE).tail(this.k).reverse();
+        aggregates = aggregates.head(this.k);
       }
 
       for (String nestedMetricUrn : this.nestedMetricUrns) {
@@ -178,7 +202,11 @@ public class DimensionWrapper extends DetectionPipeline {
             nestedFilter.put(dimName, aggregates.getString(dimName, i));
           }
 
-          nestedMetrics.add(MetricEntity.fromURN(nestedMetricUrn).withFilters(nestedFilter));
+          MetricEntity me = MetricEntity.fromURN(nestedMetricUrn).withFilters(nestedFilter);
+          nestedMetrics.add(me);
+          if (i < DIMENSION_EVALUATION_LIMIT) {
+            evaluationMetricUrns.add(me.getUrn());
+          }
         }
       }
 
@@ -195,22 +223,122 @@ public class DimensionWrapper extends DetectionPipeline {
       nestedMetrics = nestedMetrics.stream().filter(metricEntity -> checkMinLiveZone(metricEntity)).collect(Collectors.toList());
     }
 
+    return nestedMetrics;
+  }
+
+  @Override
+  public DetectionPipelineResult run() throws Exception {
+    List<MetricEntity> nestedMetrics = dimensionExplore();
+    if (nestedMetrics.isEmpty()) {
+      return new DetectionPipelineResult(Collections.<MergedAnomalyResultDTO>emptyList(), -1);
+    }
+    if (nestedMetrics.size() > MAX_DIMENSION_COMBINATIONS) {
+      throw new DetectionPipelineException(String.format(
+          "Dimension combination for {} is {} which exceeds limit of {}",
+          this.config.getId(), nestedMetrics.size(), MAX_DIMENSION_COMBINATIONS));
+    }
+
     List<MergedAnomalyResultDTO> anomalies = new ArrayList<>();
+    List<PredictionResult> predictionResults = new ArrayList<>();
     Map<String, Object> diagnostics = new HashMap<>();
     Set<Long> lastTimeStamps = new HashSet<>();
-    LOG.info("exploring {} metrics", nestedMetrics.size());
-    for (MetricEntity metric : nestedMetrics) {
+
+    long totalNestedMetrics = nestedMetrics.size();
+    long successNestedMetrics = 0; // record the number of successfully explored dimensions
+    List<Exception> exceptions = new ArrayList<>();
+    LOG.info("Run detection for {} metrics", totalNestedMetrics);
+    for (int i = 0; i < totalNestedMetrics; i++) {
+      checkEarlyStop(totalNestedMetrics, successNestedMetrics, i, exceptions);
+      MetricEntity metric = nestedMetrics.get(i);
+      List<Exception> exceptionsForNestedMetric = new ArrayList<>();
+      LOG.info("running detection for metric urn {}. {}/{}", metric.getUrn(), i + 1, totalNestedMetrics);
+      if (Thread.interrupted()) {
+        /* This happens when Future.cancel() or ExecutorService.shutdown() is called. Since dimension wrapper run
+         under ExecutorService, it might take too long to compute all dimensions before it gets timeout and cancelled.
+         In that case, this method just returns all the computed dimensions and skips the rest of them.
+         */
+        LOG.error("Current thread is interrupted before running dimension {}/{} for detection {} metrics {}, "
+                + "so skip the rest of dimensions and return the intermediate",
+            i + 1 , totalNestedMetrics, this.config.getId(), metric.getUrn());
+        break;
+      }
       for (Map<String, Object> properties : this.nestedProperties) {
-        LOG.info("running detection for {}", metric.toString());
-        DetectionPipelineResult intermediate = this.runNested(metric, properties);
+        DetectionPipelineResult intermediate;
+        try {
+          intermediate = this.runNested(metric, properties);
+        } catch (Exception e) {
+          LOG.warn("[DetectionConfigID{}] detecting anomalies for window {} to {} failed for metric urn {}.",
+              this.config.getId(), this.start, this.end, metric.getUrn(), e);
+          exceptionsForNestedMetric.add(e);
+          continue;
+        }
         lastTimeStamps.add(intermediate.getLastTimestamp());
         anomalies.addAll(intermediate.getAnomalies());
         diagnostics.put(metric.getUrn(), intermediate.getDiagnostics());
+        predictionResults.addAll(intermediate.getPredictions());
       }
+      // for one dimension, if all detectors run successfully, mark the dimension as successful
+      if (exceptionsForNestedMetric.isEmpty()) {
+        successNestedMetrics++;
+      }
+      exceptions.addAll(exceptionsForNestedMetric);
     }
 
-    return new DetectionPipelineResult(anomalies, DetectionUtils.consolidateNestedLastTimeStamps(lastTimeStamps))
-        .setDiagnostics(diagnostics);
+    checkNestedMetricsStatus(totalNestedMetrics, successNestedMetrics, exceptions, predictionResults);
+    return new DetectionPipelineResult(anomalies, DetectionUtils.consolidateNestedLastTimeStamps(lastTimeStamps),
+        predictionResults, calculateEvaluationMetrics(predictionResults)).setDiagnostics(diagnostics);
+  }
+
+  private List<EvaluationDTO> calculateEvaluationMetrics(List<PredictionResult> predictionResults) {
+    return predictionResults.stream().filter(predictionResult -> this.evaluationMetricUrns.contains(predictionResult.getMetricUrn()))
+        .map(prediction -> EvaluationDTO.fromPredictionResult(prediction, this.startTime, this.endTime,
+            this.config.getId()))
+        .collect(Collectors.toList());
+  }
+
+  private void checkEarlyStop(long totalNestedMetrics, long successNestedMetrics, int i, List<Exception> exceptions)
+      throws DetectionPipelineException {
+    // if the first certain number of dimensions all failed, throw an exception
+    if (i == EARLY_STOP_THRESHOLD && successNestedMetrics == 0) {
+      throw new DetectionPipelineException(String.format(
+          "Detection failed for first %d out of %d metric dimensions for monitoring window %d to %d, stop processing.",
+          i, totalNestedMetrics, this.getStartTime(), this.getEndTime()), Iterables.getLast(exceptions));
+    }
+  }
+
+  /**
+   * Check the exception for all nested metric and determine whether to fail the detection.
+   *
+   * This method will throw an exception to outer wrappers if the all nested metrics failed.
+   * UNLESS the exception for all nested metrics are failed by
+   * {@link DetectorDataInsufficientException} and multiple detector are configured to run,
+   * and some of them run successfully. In such case, this method will
+   * still allow the detection to finish and return the generated anomalies. Because the data insufficient exception
+   * thrown by one detector should not block other detectors's result.
+   *
+   * @param totalNestedMetrics the total number of nested metrics
+   * @param successNestedMetrics the successfully run nested metrics
+   * @param exceptions the list of all exceptions
+   * @param predictions the prediction results generated, which can tell us whether there are detectors run successfully.
+   * @throws DetectionPipelineException the exception to throw
+   */
+  private void checkNestedMetricsStatus(long totalNestedMetrics, long successNestedMetrics, List<Exception> exceptions,
+      List<PredictionResult> predictions) throws DetectionPipelineException {
+    // if all nested metrics failed, throw an exception
+    if (successNestedMetrics == 0 && totalNestedMetrics > 0) {
+      // if all exceptions are caused by DetectorDataInsufficientException and
+      // there are other detectors run successfully, keep the detection running
+      if (exceptions.stream().allMatch(e -> e.getCause() instanceof DetectorDataInsufficientException)
+          && predictions.size() != 0) {
+        LOG.warn(
+            "The detection pipeline {} for monitoring window {} to {} is having detectors throwing the DataInsufficientException, "
+                + "but the result for other successful detectors are preserved", this.config.getId(), this.getStartTime(), this.getEndTime());
+      } else {
+        throw new DetectionPipelineException(String.format(
+            "Detection failed for all nested dimensions for detection config id %d for monitoring window %d to %d.",
+            this.config.getId(), this.getStartTime(), this.getEndTime()), Iterables.getLast(exceptions));
+      }
+    }
   }
 
   private boolean checkMinLiveZone(MetricEntity me) {

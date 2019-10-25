@@ -42,13 +42,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.apache.pinot.thirdeye.common.time.TimeGranularity;
 import org.apache.pinot.thirdeye.dataframe.DataFrame;
+import org.apache.pinot.thirdeye.dataframe.LongSeries;
 import org.apache.pinot.thirdeye.dataframe.util.MetricSlice;
 import org.apache.pinot.thirdeye.datalayer.bao.DatasetConfigManager;
+import org.apache.pinot.thirdeye.datalayer.bao.EvaluationManager;
 import org.apache.pinot.thirdeye.datalayer.bao.EventManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MergedAnomalyResultManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MetricConfigManager;
 import org.apache.pinot.thirdeye.datalayer.dto.DatasetConfigDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.DetectionConfigDTO;
+import org.apache.pinot.thirdeye.datalayer.dto.EvaluationDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.EventDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MetricConfigDTO;
@@ -57,6 +60,7 @@ import org.apache.pinot.thirdeye.datasource.comparison.Row;
 import org.apache.pinot.thirdeye.datasource.loader.AggregationLoader;
 import org.apache.pinot.thirdeye.datasource.loader.TimeSeriesLoader;
 import org.apache.pinot.thirdeye.detection.spi.model.AnomalySlice;
+import org.apache.pinot.thirdeye.detection.spi.model.EvaluationSlice;
 import org.apache.pinot.thirdeye.detection.spi.model.EventSlice;
 import org.joda.time.DateTimeZone;
 import org.slf4j.Logger;
@@ -68,6 +72,7 @@ import static org.apache.pinot.thirdeye.dataframe.util.DataFrameUtils.*;
 public class DefaultDataProvider implements DataProvider {
   private static final Logger LOG = LoggerFactory.getLogger(DefaultDataProvider.class);
   private static final long TIMEOUT = 60000;
+  private static final String PROP_DETECTION_CONFIG_ID = "detectionConfigId";
 
   private final ExecutorService executor = Executors.newCachedThreadPool();
 
@@ -75,19 +80,20 @@ public class DefaultDataProvider implements DataProvider {
   private final DatasetConfigManager datasetDAO;
   private final EventManager eventDAO;
   private final MergedAnomalyResultManager anomalyDAO;
+  private final EvaluationManager evaluationDAO;
   private final TimeSeriesLoader timeseriesLoader;
   private final AggregationLoader aggregationLoader;
   private final DetectionPipelineLoader loader;
   private static LoadingCache<MetricSlice, DataFrame> DETECTION_TIME_SERIES_CACHE;
 
-
   public DefaultDataProvider(MetricConfigManager metricDAO, DatasetConfigManager datasetDAO, EventManager eventDAO,
-      MergedAnomalyResultManager anomalyDAO, TimeSeriesLoader timeseriesLoader, AggregationLoader aggregationLoader,
-      DetectionPipelineLoader loader) {
+      MergedAnomalyResultManager anomalyDAO, EvaluationManager evaluationDAO, TimeSeriesLoader timeseriesLoader,
+      AggregationLoader aggregationLoader, DetectionPipelineLoader loader) {
     this.metricDAO = metricDAO;
     this.datasetDAO = datasetDAO;
     this.eventDAO = eventDAO;
     this.anomalyDAO = anomalyDAO;
+    this.evaluationDAO = evaluationDAO;
     this.timeseriesLoader = timeseriesLoader;
     this.aggregationLoader = aggregationLoader;
     this.loader = loader;
@@ -125,10 +131,14 @@ public class DefaultDataProvider implements DataProvider {
       // if the time series slice is already in cache, return directly
       for (MetricSlice slice : slices){
         for (Map.Entry<MetricSlice, DataFrame> entry : DETECTION_TIME_SERIES_CACHE.asMap().entrySet()) {
+          // current slice potentially contained in cache
           if (entry.getKey().containSlice(slice)){
             DataFrame df = entry.getValue().filter(entry.getValue().getLongs(COL_TIME).between(slice.getStart(), slice.getEnd())).dropNull(COL_TIME);
-            output.put(slice, df);
-            break;
+            // double check if it is cache hit
+            if (df.getLongs(COL_TIME).size() > 0) {
+              output.put(slice, df);
+              break;
+            }
           }
         }
       }
@@ -140,14 +150,14 @@ public class DefaultDataProvider implements DataProvider {
           futures.put(slice, this.executor.submit(() -> DefaultDataProvider.this.timeseriesLoader.load(slice)));
         }
       }
-      LOG.info("Fetching {} slices of timeseries, {} cache hit, {} cache miss", slices.size(), output.size(), futures.size());
+      //LOG.info("Fetching {} slices of timeseries, {} cache hit, {} cache miss", slices.size(), output.size(), futures.size());
       final long deadline = System.currentTimeMillis() + TIMEOUT;
       for (MetricSlice slice : slices) {
         if (!output.containsKey(slice)) {
           output.put(slice, futures.get(slice).get(makeTimeout(deadline), TimeUnit.MILLISECONDS));
         }
       }
-      LOG.info("Fetching {} slices used {} milliseconds", slices.size(), System.currentTimeMillis() - ts);
+      //LOG.info("Fetching {} slices used {} milliseconds", slices.size(), System.currentTimeMillis() - ts);
       return output;
 
     } catch (Exception e) {
@@ -190,7 +200,10 @@ public class DefaultDataProvider implements DataProvider {
       final long deadline = System.currentTimeMillis() + TIMEOUT;
       Map<MetricSlice, DataFrame> output = new HashMap<>();
       for (MetricSlice slice : slices) {
-        output.put(slice, futures.get(slice).get(makeTimeout(deadline), TimeUnit.MILLISECONDS));
+        DataFrame result = futures.get(slice).get(makeTimeout(deadline), TimeUnit.MILLISECONDS);
+        // fill in time stamps
+        result.dropSeries(COL_TIME).addSeries(COL_TIME, LongSeries.fillValues(result.size(), slice.getStart())).setIndex(COL_TIME);
+        output.put(slice, result);
       }
       return output;
 
@@ -199,13 +212,8 @@ public class DefaultDataProvider implements DataProvider {
     }
   }
 
-  private Multimap<AnomalySlice, MergedAnomalyResultDTO> fetchAnomalies(Collection<AnomalySlice> slices,
-      long configId, boolean isLegacy) {
-    String functionIdKey = "detectionConfigId";
-    if (isLegacy) {
-      functionIdKey = "functionId";
-    }
-
+  @Override
+  public Multimap<AnomalySlice, MergedAnomalyResultDTO> fetchAnomalies(Collection<AnomalySlice> slices, long configId) {
     Multimap<AnomalySlice, MergedAnomalyResultDTO> output = ArrayListMultimap.create();
     for (AnomalySlice slice : slices) {
       List<Predicate> predicates = new ArrayList<>();
@@ -216,40 +224,22 @@ public class DefaultDataProvider implements DataProvider {
         predicates.add(Predicate.GT("endTime", slice.getStart()));
       }
       if (configId >= 0) {
-        predicates.add(Predicate.EQ(functionIdKey, configId));
+        predicates.add(Predicate.EQ(PROP_DETECTION_CONFIG_ID, configId));
       }
 
-      if (predicates.isEmpty()) throw new IllegalArgumentException("Must provide at least one of start, end, or " + functionIdKey);
+      if (predicates.isEmpty()) throw new IllegalArgumentException("Must provide at least one of start, end, or " + PROP_DETECTION_CONFIG_ID);
 
       Collection<MergedAnomalyResultDTO> anomalies = this.anomalyDAO.findByPredicate(AND(predicates));
       anomalies.removeIf(anomaly -> !slice.match(anomaly));
 
-      if (isLegacy) {
-        anomalies.removeIf(anomaly ->
-            (configId >= 0) && (anomaly.getFunctionId() == null || anomaly.getFunctionId() != configId)
-        );
-      } else {
-        anomalies.removeIf(anomaly ->
-            (configId >= 0) && (anomaly.getDetectionConfigId() == null || anomaly.getDetectionConfigId() != configId)
-        );
-      }
-      // filter all child anomalies. those are kept in the parent anomaly children set.
-      anomalies = Collections2.filter(anomalies, mergedAnomaly -> mergedAnomaly != null && !mergedAnomaly.isChild());
+      anomalies.removeIf(anomaly ->
+          (configId >= 0) && (anomaly.getDetectionConfigId() == null || anomaly.getDetectionConfigId() != configId)
+      );
 
-      LOG.info("Fetched {} anomalies between (startTime = {}, endTime = {}) with confid Id = {}", anomalies.size(), slice.getStart(), slice.getEnd(), configId);
+      LOG.info("Fetched {} anomalies between (startTime = {}, endTime = {}) with config Id = {}", anomalies.size(), slice.getStart(), slice.getEnd(), configId);
       output.putAll(slice, anomalies);
     }
     return output;
-  }
-
-  @Override
-  public Multimap<AnomalySlice, MergedAnomalyResultDTO> fetchLegacyAnomalies(Collection<AnomalySlice> slices, long configId) {
-    return fetchAnomalies(slices, configId, true);
-  }
-
-  @Override
-  public Multimap<AnomalySlice, MergedAnomalyResultDTO> fetchAnomalies(Collection<AnomalySlice> slices, long configId) {
-    return fetchAnomalies(slices, configId, false);
   }
 
   @Override
@@ -313,6 +303,27 @@ public class DefaultDataProvider implements DataProvider {
     return this.metricDAO.findByMetricAndDataset(metricName, datasetName);
   }
 
+  @Override
+  public Multimap<EvaluationSlice, EvaluationDTO> fetchEvaluations(Collection<EvaluationSlice> slices, long configId) {
+    Multimap<EvaluationSlice, EvaluationDTO> output = ArrayListMultimap.create();
+    for (EvaluationSlice slice : slices) {
+      List<Predicate> predicates = new ArrayList<>();
+      if (slice.getEnd() >= 0)
+        predicates.add(Predicate.LT("startTime", slice.getEnd()));
+      if (slice.getStart() >= 0)
+        predicates.add(Predicate.GT("endTime", slice.getStart()));
+      if (predicates.isEmpty())
+        throw new IllegalArgumentException("Must provide at least one of start, or end");
+
+      if (configId >= 0) {
+        predicates.add(Predicate.EQ("detectionConfigId", configId));
+      }
+      List<EvaluationDTO> evaluations = this.evaluationDAO.findByPredicate(AND(predicates));
+      output.putAll(slice, evaluations.stream().filter(slice::match).collect(Collectors.toList()));
+    }
+    return output;
+  }
+
   private static Predicate AND(Collection<Predicate> predicates) {
     return Predicate.AND(predicates.toArray(new Predicate[predicates.size()]));
   }
@@ -345,11 +356,19 @@ public class DefaultDataProvider implements DataProvider {
     }
 
     // align to time buckets and request time zone
-    long timeGranularity = granularity.toMillis();
+    // if granularity is more than 1 day, align to the daily boundary
+    // this alignment is required by the Pinot datasource, otherwise, it may return wrong results
+    long timeGranularity = Math.min(granularity.toMillis(), TimeUnit.DAYS.toMillis(1));
     long start = (slice.getStart() / timeGranularity) * timeGranularity;
     long end = ((slice.getEnd() + timeGranularity - 1) / timeGranularity) * timeGranularity;
 
     return slice.withStart(start).withEnd(end).withGranularity(granularity);
+  }
+
+  @Override
+  public  List<DatasetConfigDTO> fetchDatasetByDisplayName(String datasetDisplayName) {
+    List<DatasetConfigDTO> dataset = this.datasetDAO.findByPredicate(Predicate.EQ("displayName", datasetDisplayName));
+    return dataset;
   }
 
   public static void cleanCache() {

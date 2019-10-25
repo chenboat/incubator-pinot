@@ -55,6 +55,27 @@
       <artifactId>pinot-broker</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.apache.pinot</groupId>
+      <artifactId>pinot-orc</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.pinot</groupId>
+      <artifactId>pinot-parquet</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.pinot</groupId>
+      <artifactId>pinot-connector-kafka-base</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.pinot</groupId>
+      <artifactId>pinot-connector-kafka-${kafka.version}</artifactId>
+      <version>${project.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
       <groupId>commons-cli</groupId>
       <artifactId>commons-cli</artifactId>
     </dependency>
@@ -79,6 +100,29 @@
       <groupId>org.yaml</groupId>
       <artifactId>snakeyaml</artifactId>
     </dependency>
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-math3</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-aws</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-common</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-annotations</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
   </dependencies>
   <build>
     <plugins>
@@ -94,7 +138,7 @@
                 <initialMemorySize>1G</initialMemorySize>
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-tools-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-tools-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -106,7 +150,7 @@
                 <maxMemorySize>4G</maxMemorySize>
                 <extraArguments>
                   <extraArgument>-XX:MaxDirectMemorySize=30g</extraArgument>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-admin-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-admin-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -118,7 +162,7 @@
                 <maxMemorySize>20G</maxMemorySize>
                 <extraArguments>
                   <extraArgument>-XX:MaxDirectMemorySize=30g</extraArgument>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-tools-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-tools-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -130,7 +174,7 @@
                 <maxMemorySize>30G</maxMemorySize>
                 <extraArguments>
                   <extraArgument>-XX:MaxDirectMemorySize=30g</extraArgument>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-tools-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-tools-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -142,7 +186,7 @@
                 <maxMemorySize>30G</maxMemorySize>
                 <extraArguments>
                   <extraArgument>-XX:MaxDirectMemorySize=30g</extraArgument>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-tools-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-tools-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -153,7 +197,7 @@
                 <initialMemorySize>1G</initialMemorySize>
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-tools-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-tools-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -164,7 +208,7 @@
                 <initialMemorySize>1G</initialMemorySize>
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-tools-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-tools-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -175,7 +219,7 @@
                 <initialMemorySize>1G</initialMemorySize>
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-controller-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-controller-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -186,7 +230,7 @@
                 <initialMemorySize>1G</initialMemorySize>
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-broker-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-broker-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -197,7 +241,7 @@
                 <initialMemorySize>1G</initialMemorySize>
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
-                  <extraArgument>-Dlog4j.configuration=conf/pinot-server-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/pinot-server-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -208,7 +252,7 @@
                 <initialMemorySize>1G</initialMemorySize>
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
-                  <extraArgument>-Dlog4j.configuration=conf/quickstart-offline-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/quickstart-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -220,7 +264,7 @@
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
                   <extraArgument>-XX:MaxDirectMemorySize=6g</extraArgument>
-                  <extraArgument>-Dlog4j.configuration=conf/quickstart-offline-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/quickstart-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -231,7 +275,7 @@
                 <initialMemorySize>1G</initialMemorySize>
                 <maxMemorySize>1G</maxMemorySize>
                 <extraArguments>
-                  <extraArgument>-Dlog4j.configuration=conf/quickstart-realtime-log4j.properties</extraArgument>
+                  <extraArgument>-Dlog4j2.configurationFile=conf/quickstart-log4j2.xml</extraArgument>
                 </extraArguments>
               </jvmSettings>
             </program>
@@ -300,6 +344,31 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>2.6</version>
+        <executions>
+          <execution>
+            <id>copy-kafka-resources</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>copy-resources</goal>
+            </goals>
+            <configuration>
+              <!-- this is important -->
+              <overwrite>true</overwrite>
+              <!-- target -->
+              <outputDirectory>${basedir}/target/classes/sample_data/</outputDirectory>
+              <resources>
+                <resource>
+                  <!-- source -->
+                  <directory>src/main/resources/sample_data/kafka_${kafka.version}</directory>
+                </resource>
+              </resources>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

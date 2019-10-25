@@ -19,6 +19,8 @@
 
 package org.apache.pinot.thirdeye.detection;
 
+import java.util.Collections;
+import java.util.List;
 import org.apache.pinot.thirdeye.anomaly.task.TaskContext;
 import org.apache.pinot.thirdeye.anomaly.task.TaskInfo;
 import org.apache.pinot.thirdeye.anomaly.task.TaskResult;
@@ -26,10 +28,12 @@ import org.apache.pinot.thirdeye.anomaly.task.TaskRunner;
 import org.apache.pinot.thirdeye.anomaly.utils.ThirdeyeMetricsUtil;
 import org.apache.pinot.thirdeye.datalayer.bao.DatasetConfigManager;
 import org.apache.pinot.thirdeye.datalayer.bao.DetectionConfigManager;
+import org.apache.pinot.thirdeye.datalayer.bao.EvaluationManager;
 import org.apache.pinot.thirdeye.datalayer.bao.EventManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MergedAnomalyResultManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MetricConfigManager;
 import org.apache.pinot.thirdeye.datalayer.dto.DetectionConfigDTO;
+import org.apache.pinot.thirdeye.datalayer.dto.EvaluationDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
 import org.apache.pinot.thirdeye.datasource.DAORegistry;
 import org.apache.pinot.thirdeye.datasource.ThirdEyeCacheRegistry;
@@ -37,8 +41,8 @@ import org.apache.pinot.thirdeye.datasource.loader.AggregationLoader;
 import org.apache.pinot.thirdeye.datasource.loader.DefaultAggregationLoader;
 import org.apache.pinot.thirdeye.datasource.loader.DefaultTimeSeriesLoader;
 import org.apache.pinot.thirdeye.datasource.loader.TimeSeriesLoader;
-import java.util.Collections;
-import java.util.List;
+import org.apache.pinot.thirdeye.detection.annotation.registry.DetectionRegistry;
+import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,8 +51,10 @@ public class DetectionPipelineTaskRunner implements TaskRunner {
   private static final Logger LOG = LoggerFactory.getLogger(DetectionPipelineTaskRunner.class);
   private final DetectionConfigManager detectionDAO;
   private final MergedAnomalyResultManager anomalyDAO;
+  private final EvaluationManager evaluationDAO;
   private final DetectionPipelineLoader loader;
   private final DataProvider provider;
+  private final ModelMaintenanceFlow maintenanceFlow;
 
   /**
    * Default constructor for ThirdEye task execution framework.
@@ -61,7 +67,7 @@ public class DetectionPipelineTaskRunner implements TaskRunner {
     this.loader = new DetectionPipelineLoader();
     this.detectionDAO = DAORegistry.getInstance().getDetectionConfigManager();
     this.anomalyDAO = DAORegistry.getInstance().getMergedAnomalyResultDAO();
-
+    this.evaluationDAO = DAORegistry.getInstance().getEvaluationManager();
     MetricConfigManager metricDAO = DAORegistry.getInstance().getMetricConfigDAO();
     DatasetConfigManager datasetDAO = DAORegistry.getInstance().getDatasetConfigDAO();
     EventManager eventDAO = DAORegistry.getInstance().getEventDAO();
@@ -75,8 +81,9 @@ public class DetectionPipelineTaskRunner implements TaskRunner {
             ThirdEyeCacheRegistry.getInstance().getQueryCache(),
             ThirdEyeCacheRegistry.getInstance().getDatasetMaxDataTimeCache());
 
-    this.provider = new DefaultDataProvider(metricDAO, datasetDAO, eventDAO, this.anomalyDAO,
+    this.provider = new DefaultDataProvider(metricDAO, datasetDAO, eventDAO, this.anomalyDAO, this.evaluationDAO,
         timeseriesLoader, aggregationLoader, this.loader);
+    this.maintenanceFlow = new ModelRetuneFlow(this.provider, DetectionRegistry.getInstance());
   }
 
   /**
@@ -84,15 +91,18 @@ public class DetectionPipelineTaskRunner implements TaskRunner {
    *
    * @param detectionDAO detection config DAO
    * @param anomalyDAO merged anomaly DAO
+   * @param evaluationDAO the evaluation DAO
    * @param loader pipeline loader
    * @param provider pipeline data provider
    */
   public DetectionPipelineTaskRunner(DetectionConfigManager detectionDAO, MergedAnomalyResultManager anomalyDAO,
-      DetectionPipelineLoader loader, DataProvider provider) {
+      EvaluationManager evaluationDAO, DetectionPipelineLoader loader, DataProvider provider) {
     this.detectionDAO = detectionDAO;
     this.anomalyDAO = anomalyDAO;
+    this.evaluationDAO = evaluationDAO;
     this.loader = loader;
     this.provider = provider;
+    this.maintenanceFlow = new ModelRetuneFlow(this.provider, DetectionRegistry.getInstance());
   }
 
   @Override
@@ -107,15 +117,16 @@ public class DetectionPipelineTaskRunner implements TaskRunner {
         throw new IllegalArgumentException(String.format("Could not resolve config id %d", info.configId));
       }
 
+      LOG.info("Start detection for config {} between {} and {}", config.getId(), info.start, info.end);
       DetectionPipeline pipeline = this.loader.from(this.provider, config, info.start, info.end);
       DetectionPipelineResult result = pipeline.run();
 
       if (result.getLastTimestamp() < 0) {
+        LOG.info("No detection ran for config {} between {} and {}", config.getId(), info.start, info.end);
         return Collections.emptyList();
       }
 
       config.setLastTimestamp(result.getLastTimestamp());
-      this.detectionDAO.update(config);
 
       for (MergedAnomalyResultDTO mergedAnomalyResultDTO : result.getAnomalies()) {
         this.anomalyDAO.save(mergedAnomalyResultDTO);
@@ -124,14 +135,25 @@ public class DetectionPipelineTaskRunner implements TaskRunner {
         }
       }
 
-      return Collections.emptyList();
+      for (EvaluationDTO evaluationDTO : result.getEvaluations()) {
+        this.evaluationDAO.save(evaluationDTO);
+      }
 
+      try {
+        // run maintenance flow to update model
+        config = maintenanceFlow.maintain(config, Instant.now());
+      } catch (Exception e) {
+        LOG.warn("Re-tune pipeline {} failed", config.getId(), e);
+      }
+      this.detectionDAO.update(config);
+
+      ThirdeyeMetricsUtil.detectionTaskSuccessCounter.inc();
+      LOG.info("End detection for config {} between {} and {}. Detected {} anomalies.", config.getId(), info.start,
+          info.end, result.getAnomalies());
+      return Collections.emptyList();
     } catch(Exception e) {
       ThirdeyeMetricsUtil.detectionTaskExceptionCounter.inc();
       throw e;
-
-    } finally {
-      ThirdeyeMetricsUtil.detectionTaskSuccessCounter.inc();
     }
   }
 }

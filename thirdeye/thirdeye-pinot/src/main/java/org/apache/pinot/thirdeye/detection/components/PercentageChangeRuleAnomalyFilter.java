@@ -35,7 +35,7 @@ import org.apache.pinot.thirdeye.rootcause.timeseries.Baseline;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,6 +49,8 @@ import static org.apache.pinot.thirdeye.dataframe.util.DataFrameUtils.*;
 public class PercentageChangeRuleAnomalyFilter implements AnomalyFilter<PercentageChangeRuleAnomalyFilterSpec> {
   private static final Logger LOG = LoggerFactory.getLogger(PercentageChangeRuleAnomalyFilter.class);
   private double threshold;
+  private double upThreshold;
+  private double downThreshold;
   private InputDataFetcher dataFetcher;
   private Baseline baseline;
   private Pattern pattern;
@@ -57,36 +59,27 @@ public class PercentageChangeRuleAnomalyFilter implements AnomalyFilter<Percenta
   public boolean isQualified(MergedAnomalyResultDTO anomaly) {
     MetricEntity me = MetricEntity.fromURN(anomaly.getMetricUrn());
     List<MetricSlice> slices = new ArrayList<>();
-    MetricSlice currentSlice =
-        MetricSlice.from(me.getId(), anomaly.getStartTime(), anomaly.getEndTime(), me.getFilters());
-    slices.add(currentSlice);
-
+    MetricSlice currentSlice = MetricSlice.from(me.getId(), anomaly.getStartTime(), anomaly.getEndTime(), me.getFilters());
     // customize baseline offset
-    MetricSlice baselineSlice = null;
     if (baseline != null) {
-      baselineSlice = this.baseline.scatter(currentSlice).get(0);
-      slices.add(baselineSlice);
+      slices.addAll(this.baseline.scatter(currentSlice));
     }
 
     Map<MetricSlice, DataFrame> aggregates =
         this.dataFetcher.fetchData(new InputDataSpec().withAggregateSlices(slices)).getAggregates();
 
-    double currentValue;
-    if (aggregates.get(currentSlice).isEmpty()) {
-      currentValue = anomaly.getAvgCurrentVal();
-    } else {
-      currentValue = getValueFromAggregates(currentSlice, aggregates);
-    }
-
+    double currentValue = anomaly.getAvgCurrentVal();
     double baselineValue;
-    if (baselineSlice == null) {
+    if (baseline == null) {
       baselineValue = anomaly.getAvgBaselineVal();
-    } else if (aggregates.get(baselineSlice).isEmpty()) {
-      baselineValue = anomaly.getAvgBaselineVal();
-      LOG.warn("Unable to fetch data for baseline slice for anomaly {}. start = {} end = {} filters = {}. Using anomaly"
-              + " baseline ", anomaly.getId(), anomaly.getStartTime(), anomaly.getEndTime(), me.getFilters());
     } else {
-      baselineValue = getValueFromAggregates(baselineSlice, aggregates);
+      try {
+        baselineValue = this.baseline.gather(currentSlice, aggregates).getDouble(COL_VALUE, 0);
+      } catch (Exception e) {
+        baselineValue = anomaly.getAvgBaselineVal();
+        LOG.warn("Unable to fetch baseline for anomaly {}. start = {} end = {} filters = {}. Using anomaly"
+            + " baseline ", anomaly.getId(), anomaly.getStartTime(), anomaly.getEndTime(), me.getFilters(), e);
+      }
     }
 
     // if inconsistent with up/down, filter the anomaly
@@ -94,10 +87,15 @@ public class PercentageChangeRuleAnomalyFilter implements AnomalyFilter<Percenta
         currentValue > baselineValue && pattern.equals(Pattern.DOWN))) {
       return false;
     }
-    if (baselineValue != 0 && Math.abs(currentValue / baselineValue - 1) < this.threshold) {
-      return false;
+
+    double percentageChange = Math.abs(currentValue / baselineValue - 1);
+    if (currentValue < baselineValue) {
+      double downThreshold = Double.isNaN(this.downThreshold) ? this.threshold : this.downThreshold;
+      return Double.compare(downThreshold, percentageChange) <= 0;
+    } else {
+      double upThreshold = Double.isNaN(this.upThreshold) ? this.threshold : this.upThreshold;
+      return Double.compare(upThreshold, percentageChange) <= 0;
     }
-    return true;
   }
 
   @Override
@@ -109,9 +107,7 @@ public class PercentageChangeRuleAnomalyFilter implements AnomalyFilter<Percenta
       this.baseline = BaselineParsingUtils.parseOffset(spec.getOffset(), spec.getTimezone());
     }
     this.threshold = spec.getThreshold();
-  }
-
-  private double getValueFromAggregates(MetricSlice slice, Map<MetricSlice, DataFrame> aggregates) {
-    return aggregates.get(slice).getDouble(COL_VALUE, 0);
+    this.upThreshold = spec.getUpThreshold();
+    this.downThreshold = spec.getDownThreshold();
   }
 }

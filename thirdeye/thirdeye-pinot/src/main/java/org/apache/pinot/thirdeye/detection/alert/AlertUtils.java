@@ -24,9 +24,7 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
-import org.apache.pinot.thirdeye.constant.AnomalyFeedbackType;
 import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
-import com.mysql.jdbc.StringUtils;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -35,9 +33,8 @@ import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
 import javax.mail.internet.InternetAddress;
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.collections.MapUtils;
-
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.collections4.MapUtils;
 
 public class AlertUtils {
   private AlertUtils() {
@@ -87,7 +84,7 @@ public class AlertUtils {
 
   public static long getHighWaterMark(Collection<MergedAnomalyResultDTO> anomalies) {
     if (anomalies.isEmpty()) {
-      return -1;
+      return 0;
     }
     return Collections.max(Collections2.transform(anomalies, mergedAnomalyResultDTO -> mergedAnomalyResultDTO.getId()));
   }

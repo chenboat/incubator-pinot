@@ -43,7 +43,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import static org.apache.pinot.thirdeye.dataframe.util.DataFrameUtils.*;
 
@@ -64,7 +64,6 @@ public class SitewideImpactRuleAnomalyFilter implements AnomalyFilter<SitewideIm
     MetricEntity me = MetricEntity.fromURN(anomaly.getMetricUrn());
     List<MetricSlice> slices = new ArrayList<>();
     MetricSlice currentSlice = MetricSlice.from(me.getId(), anomaly.getStartTime(), anomaly.getEndTime(), me.getFilters());
-    slices.add(currentSlice);
 
     // customize baseline offset
     MetricSlice baselineSlice = null;
@@ -85,23 +84,21 @@ public class SitewideImpactRuleAnomalyFilter implements AnomalyFilter<SitewideIm
     }
     slices.add(siteWideSlice);
 
-
-
     Map<MetricSlice, DataFrame> aggregates = this.dataFetcher.fetchData(
         new InputDataSpec().withAggregateSlices(slices))
         .getAggregates();
 
-    double currentValue = getValueFromAggregates(currentSlice, aggregates);
-    double baselineValue = baselineSlice == null ? anomaly.getAvgBaselineVal() : getValueFromAggregates(baselineSlice, aggregates);
-    double siteWideBaselineValue = getValueFromAggregates(siteWideSlice, aggregates);
+    double currentValue = anomaly.getAvgCurrentVal();
+    double baselineValue = baseline == null ? anomaly.getAvgBaselineVal() :  this.baseline.gather(currentSlice, aggregates).getDouble(COL_VALUE, 0);
+    double siteWideValue = getValueFromAggregates(siteWideSlice, aggregates);
 
     // if inconsistent with up/down, filter the anomaly
     if (!pattern.equals(Pattern.UP_OR_DOWN) && (currentValue < baselineValue && pattern.equals(Pattern.UP)) || (currentValue > baselineValue && pattern.equals(Pattern.DOWN))) {
       return false;
     }
     // if doesn't pass the threshold, filter the anomaly
-    if (siteWideBaselineValue != 0
-        && (Math.abs(currentValue - baselineValue) / siteWideBaselineValue) < this.threshold) {
+    if (siteWideValue != 0
+        && (Math.abs(currentValue - baselineValue) / siteWideValue) < this.threshold) {
       return false;
     }
 

@@ -26,13 +26,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
-import javax.annotation.Nullable;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.JobContext;
@@ -46,7 +44,8 @@ import org.apache.pinot.common.config.SegmentsValidationAndRetentionConfig;
 import org.apache.pinot.common.config.TableConfig;
 import org.apache.pinot.common.data.Schema;
 import org.apache.pinot.common.utils.StringUtil;
-import org.apache.pinot.hadoop.job.mapper.SegmentCreationMapper;
+import org.apache.pinot.hadoop.job.mappers.SegmentCreationMapper;
+import org.apache.pinot.hadoop.utils.JobPreparationHelper;
 import org.apache.pinot.hadoop.utils.PushLocation;
 
 
@@ -64,7 +63,8 @@ public class SegmentCreationJob extends BaseSegmentJob {
   protected final String _defaultPermissionsMask;
   protected final List<PushLocation> _pushLocations;
 
-  protected FileSystem _fileSystem;
+  // Output Directory FileSystem
+  protected FileSystem _outputDirFileSystem;
 
   public SegmentCreationJob(Properties properties) {
     super(properties);
@@ -104,7 +104,7 @@ public class SegmentCreationJob extends BaseSegmentJob {
 
   @Override
   protected boolean isDataFile(String fileName) {
-    // Other files may have different extensions, eg: orc can have no extension
+    // For custom record reader, treat all files as data file
     if (_properties.getProperty(JobConfigConstants.RECORD_READER_PATH) != null) {
       return true;
     }
@@ -117,11 +117,11 @@ public class SegmentCreationJob extends BaseSegmentJob {
     _logger.info("Starting {}", getClass().getSimpleName());
 
     // Initialize all directories
-    _fileSystem = FileSystem.get(_conf);
-    mkdirs(_outputDir);
-    mkdirs(_stagingDir);
+    _outputDirFileSystem = FileSystem.get(_outputDir.toUri(), _conf);
+    JobPreparationHelper.mkdirs(_outputDirFileSystem, _outputDir, _defaultPermissionsMask);
+    JobPreparationHelper.mkdirs(_outputDirFileSystem, _stagingDir, _defaultPermissionsMask);
     Path stagingInputDir = new Path(_stagingDir, "input");
-    mkdirs(stagingInputDir);
+    JobPreparationHelper.mkdirs(_outputDirFileSystem, stagingInputDir, _defaultPermissionsMask);
 
     // Gather all data files
     List<Path> dataFilePaths = getDataFilePaths(_inputPattern);
@@ -134,7 +134,7 @@ public class SegmentCreationJob extends BaseSegmentJob {
       _logger.info("Creating segments with data files: {}", dataFilePaths);
       for (int i = 0; i < numDataFiles; i++) {
         Path dataFilePath = dataFilePaths.get(i);
-        try (DataOutputStream dataOutputStream = _fileSystem.create(new Path(stagingInputDir, Integer.toString(i)))) {
+        try (DataOutputStream dataOutputStream = _outputDirFileSystem.create(new Path(stagingInputDir, Integer.toString(i)))) {
           dataOutputStream.write(StringUtil.encodeUtf8(dataFilePath.toString() + " " + i));
           dataOutputStream.flush();
         }
@@ -191,56 +191,22 @@ public class SegmentCreationJob extends BaseSegmentJob {
 
     // Delete the staging directory
     _logger.info("Deleting the staging directory: {}", _stagingDir);
-    _fileSystem.delete(_stagingDir, true);
+    _outputDirFileSystem.delete(_stagingDir, true);
   }
 
-  protected void mkdirs(Path dirPath)
-      throws IOException {
-    if (_fileSystem.exists(dirPath)) {
-      _logger.warn("Deleting existing file: {}", dirPath);
-      _fileSystem.delete(dirPath, true);
-    }
-    _logger.info("Making directory: {}", dirPath);
-    _fileSystem.mkdirs(dirPath);
-    setDirPermission(dirPath);
-  }
-
-  protected void setDirPermission(Path dirPath)
-      throws IOException {
-    if (_defaultPermissionsMask != null) {
-      FsPermission permission = FsPermission.getDirDefault().applyUMask(new FsPermission(_defaultPermissionsMask));
-      _logger.info("Setting permission: {} to directory: {}", permission, dirPath);
-      _fileSystem.setPermission(dirPath, permission);
-    }
-  }
-
-  @Nullable
-  protected TableConfig getTableConfig()
-      throws IOException {
-    try (ControllerRestApi controllerRestApi = getControllerRestApi()) {
-      return controllerRestApi != null ? controllerRestApi.getTableConfig() : null;
-    }
-  }
-
+  @Override
   protected Schema getSchema()
       throws IOException {
     try (ControllerRestApi controllerRestApi = getControllerRestApi()) {
       if (controllerRestApi != null) {
         return controllerRestApi.getSchema();
       } else {
-        try (InputStream inputStream = _fileSystem.open(_schemaFile)) {
+        // Schema file could be stored local or remotely.
+        try (InputStream inputStream = FileSystem.get(_schemaFile.toUri(), getConf()).open(_schemaFile)) {
           return Schema.fromInputSteam(inputStream);
         }
       }
     }
-  }
-
-  /**
-   * Can be overridden to provide custom controller Rest API.
-   */
-  @Nullable
-  protected ControllerRestApi getControllerRestApi() {
-    return _pushLocations != null ? new DefaultControllerRestApi(_pushLocations, _rawTableName) : null;
   }
 
   protected void validateTableConfig(TableConfig tableConfig) {
@@ -263,23 +229,7 @@ public class SegmentCreationJob extends BaseSegmentJob {
   protected void addDepsJarToDistributedCache(Job job)
       throws IOException {
     if (_depsJarDir != null) {
-      addDepsJarToDistributedCacheHelper(job, _depsJarDir);
-    }
-  }
-
-  protected void addDepsJarToDistributedCacheHelper(Job job, Path depsJarDir)
-      throws IOException {
-    FileStatus[] fileStatuses = _fileSystem.listStatus(depsJarDir);
-    for (FileStatus fileStatus : fileStatuses) {
-      if (fileStatus.isDirectory()) {
-        addDepsJarToDistributedCacheHelper(job, fileStatus.getPath());
-      } else {
-        Path depJarPath = fileStatus.getPath();
-        if (depJarPath.getName().endsWith(".jar")) {
-          _logger.info("Adding deps jar: {} to distributed cache", depJarPath);
-          job.addCacheArchive(depJarPath.toUri());
-        }
-      }
+      JobPreparationHelper.addDepsJarToDistributedCacheHelper(FileSystem.get(_depsJarDir.toUri(), getConf()), job, _depsJarDir);
     }
   }
 
@@ -293,11 +243,11 @@ public class SegmentCreationJob extends BaseSegmentJob {
   protected void moveSegmentsToOutputDir()
       throws IOException {
     Path segmentTarDir = new Path(new Path(_stagingDir, "output"), JobConfigConstants.SEGMENT_TAR_DIR);
-    for (FileStatus segmentTarStatus : _fileSystem.listStatus(segmentTarDir)) {
+    for (FileStatus segmentTarStatus : _outputDirFileSystem.listStatus(segmentTarDir)) {
       Path segmentTarPath = segmentTarStatus.getPath();
       Path dest = new Path(_outputDir, segmentTarPath.getName());
       _logger.info("Moving segment tar file from: {} to: {}", segmentTarPath, dest);
-      _fileSystem.rename(segmentTarPath, dest);
+      _outputDirFileSystem.rename(segmentTarPath, dest);
     }
   }
 }

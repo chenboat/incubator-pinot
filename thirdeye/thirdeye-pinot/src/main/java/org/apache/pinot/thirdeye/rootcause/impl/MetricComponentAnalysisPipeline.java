@@ -21,6 +21,7 @@ package org.apache.pinot.thirdeye.rootcause.impl;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
+import org.apache.pinot.thirdeye.cube.data.cube.Cube;
 import org.apache.pinot.thirdeye.dataframe.DataFrame;
 import org.apache.pinot.thirdeye.dataframe.DoubleSeries;
 import org.apache.pinot.thirdeye.dataframe.Series;
@@ -52,7 +53,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import org.apache.commons.collections.MapUtils;
+import org.apache.commons.collections4.MapUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,7 +67,7 @@ import org.slf4j.LoggerFactory;
  * slices from the dataset. The result is an ordered list of the top k slices with the biggest
  * relative change.
  *
- * @see org.apache.pinot.thirdeye.client.diffsummary.Cube
+ * @see Cube
  */
 public class MetricComponentAnalysisPipeline extends Pipeline {
   private static final Logger LOG = LoggerFactory.getLogger(MetricComponentAnalysisPipeline.class);

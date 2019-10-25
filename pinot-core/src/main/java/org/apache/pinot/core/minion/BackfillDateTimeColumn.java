@@ -33,7 +33,7 @@ import org.apache.pinot.core.data.GenericRow;
 import org.apache.pinot.core.data.readers.FileFormat;
 import org.apache.pinot.core.data.readers.PinotSegmentRecordReader;
 import org.apache.pinot.core.data.readers.RecordReader;
-import org.apache.pinot.core.data.recordtransformer.CompoundTransformer;
+import org.apache.pinot.core.data.recordtransformer.CompositeTransformer;
 import org.apache.pinot.core.indexsegment.generator.SegmentGeneratorConfig;
 import org.apache.pinot.core.segment.creator.RecordReaderSegmentCreationDataSource;
 import org.apache.pinot.core.segment.creator.impl.SegmentIndexCreationDriverImpl;
@@ -56,14 +56,16 @@ import org.slf4j.LoggerFactory;
 public class BackfillDateTimeColumn {
   private static final Logger LOGGER = LoggerFactory.getLogger(BackfillDateTimeColumn.class);
 
+  private final String _rawTableName;
   private final File _originalIndexDir;
   private final File _backfilledIndexDir;
   private final TimeFieldSpec _srcTimeFieldSpec;
   private final DateTimeFieldSpec _destDateTimeFieldSpec;
 
-  public BackfillDateTimeColumn(@Nonnull File originalIndexDir, @Nonnull File backfilledIndexDir,
+  public BackfillDateTimeColumn(@Nonnull String rawTableName, @Nonnull File originalIndexDir, @Nonnull File backfilledIndexDir,
       @Nonnull TimeFieldSpec srcTimeSpec, @Nonnull DateTimeFieldSpec destDateTimeSpec)
       throws Exception {
+    _rawTableName = rawTableName;
     _originalIndexDir = originalIndexDir;
     _backfilledIndexDir = backfilledIndexDir;
     Preconditions.checkArgument(!_originalIndexDir.getAbsolutePath().equals(_backfilledIndexDir.getAbsolutePath()),
@@ -76,8 +78,7 @@ public class BackfillDateTimeColumn {
       throws Exception {
     SegmentMetadataImpl originalSegmentMetadata = new SegmentMetadataImpl(_originalIndexDir);
     String segmentName = originalSegmentMetadata.getName();
-    String tableName = originalSegmentMetadata.getTableName();
-    LOGGER.info("Start backfilling segment: {} in table: {}", segmentName, tableName);
+    LOGGER.info("Start backfilling segment: {} in table: {}", segmentName, _rawTableName);
 
     PinotSegmentRecordReader segmentRecordReader = new PinotSegmentRecordReader(_originalIndexDir);
     BackfillDateTimeRecordReader wrapperReader =
@@ -90,7 +91,7 @@ public class BackfillDateTimeColumn {
     config.setFormat(FileFormat.PINOT);
     config.setOutDir(_backfilledIndexDir.getAbsolutePath());
     config.setOverwrite(true);
-    config.setTableName(tableName);
+    config.setTableName(_rawTableName);
     config.setSegmentName(segmentName);
     config.setSchema(wrapperReader.getSchema());
 
@@ -102,7 +103,7 @@ public class BackfillDateTimeColumn {
     LOGGER.info("Creating segment for {} with config {}", segmentName, config.toString());
     SegmentIndexCreationDriverImpl driver = new SegmentIndexCreationDriverImpl();
     driver.init(config, new RecordReaderSegmentCreationDataSource(wrapperReader),
-        CompoundTransformer.getPassThroughTransformer());
+        CompositeTransformer.getPassThroughTransformer());
     driver.build();
 
     return true;

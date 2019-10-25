@@ -1,3 +1,5 @@
+create alias if not exists TO_UNIXTIME as $$ long unix_timestamp(java.sql.Timestamp timestamp) { return
+(long) (timestamp.getTime() / 1000L); } $$;
 
 create table if not exists generic_json_entity (
     id bigint(20) primary key auto_increment,
@@ -115,6 +117,7 @@ create index merged_anomaly_result_detection_config_id_idx on merged_anomaly_res
 
 create table if not exists dataset_config_index (
     dataset varchar(200) not null,
+    display_name varchar(200),
     active boolean,
     requires_completeness_check boolean,
     base_id bigint(20) not null,
@@ -127,6 +130,7 @@ create index dataset_config_dataset_idx on dataset_config_index(dataset);
 create index dataset_config_active_idx on dataset_config_index(active);
 create index dataset_config_requires_completeness_check_idx on dataset_config_index(requires_completeness_check);
 create index dataset_config_base_id_idx ON dataset_config_index(base_id);
+create index dataset_config_display_name_idx on dataset_config_index(display_name);
 
 create table if not exists metric_config_index (
     name varchar(200) not null,
@@ -388,3 +392,19 @@ ALTER TABLE `detection_alert_config_index` ADD UNIQUE `detection_alert_config_un
 create index detection_alert_config_base_id_idx ON detection_alert_config_index(base_id);
 create index detection_alert_config_name_idx ON detection_alert_config_index(`name`);
 create index detection_alert_config_application_idx ON detection_alert_config_index(`application`);
+
+create table if not exists evaluation_index (
+    base_id bigint(20) not null,
+    detection_config_id bigint(20) not null,
+    start_time bigint(20) not null,
+    end_time bigint(20) not null,
+    detectorName VARCHAR(128),
+    mape double,
+    create_time timestamp,
+    update_time timestamp default current_timestamp,
+    version int(10)
+) ENGINE=InnoDB;
+ALTER TABLE `evaluation_index` ADD UNIQUE `evaluation_index`(`detection_config_id`, `start_time`, `end_time`);
+create index evaluation_base_id_idx ON evaluation_index(base_id);
+create index evaluation_detection_config_id_idx ON evaluation_index(detection_config_id);
+create index evaluation_detection_start_time_idx on evaluation_index(start_time);

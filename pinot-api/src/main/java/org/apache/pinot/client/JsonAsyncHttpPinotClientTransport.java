@@ -24,6 +24,8 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ning.http.client.AsyncHttpClient;
 import com.ning.http.client.Response;
+
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -39,6 +41,13 @@ class JsonAsyncHttpPinotClientTransport implements PinotClientTransport {
   private static final ObjectReader OBJECT_READER = new ObjectMapper().reader();
 
   AsyncHttpClient _httpClient = new AsyncHttpClient();
+  Map<String, String> _headers;
+
+  public JsonAsyncHttpPinotClientTransport() {}
+
+  public JsonAsyncHttpPinotClientTransport(Map<String, String> headers) {
+    _headers = headers;
+  }
 
   @Override
   public BrokerResponse executeQuery(String brokerAddress, String query)
@@ -52,18 +61,46 @@ class JsonAsyncHttpPinotClientTransport implements PinotClientTransport {
 
   @Override
   public Future<BrokerResponse> executeQueryAsync(String brokerAddress, final String query) {
+    return executeQueryAsync(brokerAddress, new Request("pql", query));
+  }
+
+  public Future<BrokerResponse> executePinotQueryAsync(String brokerAddress, final Request request) {
     try {
       ObjectNode json = JsonNodeFactory.instance.objectNode();
-      json.put("pql", query);
+      json.put(request.getQueryFormat(), request.getQuery());
 
       final String url = "http://" + brokerAddress + "/query";
 
-      final Future<Response> response = _httpClient.preparePost(url).setBody(json.toString()).execute();
+      AsyncHttpClient.BoundRequestBuilder requestBuilder = _httpClient.preparePost(url);
 
-      return new BrokerResponseFuture(response, query, url);
+      if(_headers != null) {
+        _headers.forEach((k, v) -> requestBuilder.addHeader(k, v));
+      }
+
+      final Future<Response> response = requestBuilder
+          .addHeader("Content-Type", "application/json; charset=utf-8")
+          .setBody(json.toString()).execute();
+
+      return new BrokerResponseFuture(response, request.getQuery(), url);
     } catch (Exception e) {
       throw new PinotClientException(e);
     }
+  }
+
+  @Override
+  public BrokerResponse executeQuery(String brokerAddress, Request request)
+      throws PinotClientException {
+    try {
+      return executeQueryAsync(brokerAddress, request).get();
+    } catch (Exception e) {
+      throw new PinotClientException(e);
+    }
+  }
+
+  @Override
+  public Future<BrokerResponse> executeQueryAsync(String brokerAddress, Request request)
+      throws PinotClientException {
+    return executePinotQueryAsync(brokerAddress, request);
   }
 
   private static class BrokerResponseFuture implements Future<BrokerResponse> {
@@ -113,7 +150,7 @@ class JsonAsyncHttpPinotClientTransport implements PinotClientTransport {
               "Pinot returned HTTP status " + httpResponse.getStatusCode() + ", expected 200");
         }
 
-        String responseBody = httpResponse.getResponseBody();
+        String responseBody = httpResponse.getResponseBody("UTF-8");
         return BrokerResponse.fromJson(OBJECT_READER.readTree(responseBody));
       } catch (Exception e) {
         throw new ExecutionException(e);

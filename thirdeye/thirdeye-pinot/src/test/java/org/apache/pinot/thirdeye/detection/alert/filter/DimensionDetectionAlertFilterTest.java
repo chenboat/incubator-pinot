@@ -22,7 +22,7 @@ import org.apache.pinot.thirdeye.datalayer.dto.DetectionAlertConfigDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
 import org.apache.pinot.thirdeye.detection.MockDataProvider;
 import org.apache.pinot.thirdeye.detection.alert.DetectionAlertFilter;
-import org.apache.pinot.thirdeye.detection.alert.DetectionAlertFilterRecipients;
+import org.apache.pinot.thirdeye.detection.alert.DetectionAlertFilterNotification;
 import org.apache.pinot.thirdeye.detection.alert.DetectionAlertFilterResult;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -67,10 +67,10 @@ public class DimensionDetectionAlertFilterTest {
 
   private MockDataProvider provider;
   private DetectionAlertConfigDTO alertConfig;
-  private DetectionAlertConfigDTO alertConfigForLegacyAnomalies;
 
   @BeforeMethod
   public void beforeMethod() {
+
     this.detectedAnomalies = new ArrayList<>();
     this.detectedAnomalies.add(makeAnomaly(1001L, 1500, 2000, Collections.<String, String>emptyMap()));
     this.detectedAnomalies.add(makeAnomaly(1001L,0, 1000, Collections.singletonMap("key", "value")));
@@ -90,7 +90,6 @@ public class DimensionDetectionAlertFilterTest {
         .setAnomalies(this.detectedAnomalies);
 
     this.alertConfig = createDetectionAlertConfig();
-    this.alertConfigForLegacyAnomalies = createDetectionAlertConfig();
   }
 
   private DetectionAlertConfigDTO createDetectionAlertConfig() {
@@ -119,13 +118,15 @@ public class DimensionDetectionAlertFilterTest {
   public void testAlertFilterRecipients() throws Exception {
     this.alertFilter = new DimensionDetectionAlertFilter(provider, alertConfig,2500L);
 
-    DetectionAlertFilterRecipients recDefault = makeRecipients();
-    DetectionAlertFilterRecipients recValue = makeRecipients(PROP_TO_FOR_VALUE);
-    DetectionAlertFilterRecipients recAnotherValue = makeRecipients(PROP_TO_FOR_ANOTHER_VALUE);
-
     DetectionAlertFilterResult result = this.alertFilter.run();
+
+    DetectionAlertFilterNotification recDefault = AlertFilterUtils.makeEmailNotifications();
     Assert.assertEquals(result.getResult().get(recDefault), makeSet(0, 3, 4));
+
+    DetectionAlertFilterNotification recValue = AlertFilterUtils.makeEmailNotifications(PROP_TO_FOR_VALUE);
     Assert.assertEquals(result.getResult().get(recValue), makeSet(1, 5));
+
+    DetectionAlertFilterNotification recAnotherValue = AlertFilterUtils.makeEmailNotifications(PROP_TO_FOR_ANOTHER_VALUE);
     Assert.assertEquals(result.getResult().get(recAnotherValue), makeSet(2));
     // 6, 7 are out of search range
   }
@@ -140,9 +141,10 @@ public class DimensionDetectionAlertFilterTest {
 
     this.detectedAnomalies.add(child);
 
-    DetectionAlertFilterRecipients recValue = makeRecipients(PROP_TO_FOR_VALUE);
+    DetectionAlertFilterNotification recValue = AlertFilterUtils.makeEmailNotifications(PROP_TO_FOR_VALUE);
 
     DetectionAlertFilterResult result = this.alertFilter.run();
+
     Assert.assertEquals(result.getResult().size(), 1);
     Assert.assertTrue(result.getResult().containsKey(recValue));
   }
@@ -171,15 +173,16 @@ public class DimensionDetectionAlertFilterTest {
     this.detectedAnomalies.add(anomalyWithoutFeedback);
     this.detectedAnomalies.add(anomalyWithNull);
 
-    DetectionAlertFilterRecipients recDefault = makeRecipients();
-    DetectionAlertFilterRecipients recValue = makeRecipients(PROP_TO_FOR_VALUE);
-
     DetectionAlertFilterResult result = this.alertFilter.run();
     Assert.assertEquals(result.getResult().size(), 2);
+
+    DetectionAlertFilterNotification recDefault = AlertFilterUtils.makeEmailNotifications(PROP_TO_VALUE, PROP_CC_VALUE, PROP_BCC_VALUE);
     Assert.assertTrue(result.getResult().containsKey(recDefault));
     Assert.assertEquals(result.getResult().get(recDefault).size(), 2);
     Assert.assertTrue(result.getResult().get(recDefault).contains(anomalyWithoutFeedback));
     Assert.assertTrue(result.getResult().get(recDefault).contains(anomalyWithNull));
+
+    DetectionAlertFilterNotification recValue = AlertFilterUtils.makeEmailNotifications(PROP_TO_FOR_VALUE);
     Assert.assertTrue(result.getResult().containsKey(recValue));
   }
 
@@ -189,15 +192,5 @@ public class DimensionDetectionAlertFilterTest {
       output.add(this.detectedAnomalies.get(anomalyIndex));
     }
     return output;
-  }
-
-  private static DetectionAlertFilterRecipients makeRecipients() {
-    return makeRecipients(new HashSet<String>());
-  }
-
-  private static DetectionAlertFilterRecipients makeRecipients(Set<String> to) {
-    Set<String> newTo = new HashSet<>(PROP_TO_VALUE);
-    newTo.addAll(to);
-    return new DetectionAlertFilterRecipients(newTo, new HashSet<>(PROP_CC_VALUE), new HashSet<>(PROP_BCC_VALUE));
   }
 }

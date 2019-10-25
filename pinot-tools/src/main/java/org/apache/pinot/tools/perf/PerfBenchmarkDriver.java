@@ -28,15 +28,18 @@ import java.io.FileInputStream;
 import java.io.FileReader;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
-import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import javax.annotation.Nullable;
+import org.apache.commons.configuration.BaseConfiguration;
 import org.apache.commons.configuration.Configuration;
 import org.apache.commons.configuration.PropertiesConfiguration;
+import org.apache.helix.HelixManager;
+import org.apache.helix.HelixManagerFactory;
+import org.apache.helix.InstanceType;
 import org.apache.helix.manager.zk.ZKHelixAdmin;
 import org.apache.helix.tools.ClusterVerifiers.StrictMatchExternalViewVerifier;
 import org.apache.pinot.broker.broker.helix.HelixBrokerStarter;
@@ -46,7 +49,6 @@ import org.apache.pinot.common.config.Tenant;
 import org.apache.pinot.common.config.Tenant.TenantBuilder;
 import org.apache.pinot.common.segment.SegmentMetadata;
 import org.apache.pinot.common.utils.CommonConstants;
-import org.apache.pinot.common.utils.FileUploadDownloadClient;
 import org.apache.pinot.common.utils.JsonUtils;
 import org.apache.pinot.common.utils.TenantRole;
 import org.apache.pinot.controller.ControllerConf;
@@ -71,6 +73,7 @@ public class PerfBenchmarkDriver {
   private final String _segmentFormatVersion;
   private final boolean _verbose;
 
+  private ControllerStarter _controllerStarter;
   private String _controllerHost;
   private int _controllerPort;
   private String _controllerAddress;
@@ -88,6 +91,10 @@ public class PerfBenchmarkDriver {
   private final String _brokerTenantName = "DefaultTenant";
   private final String _serverTenantName = "DefaultTenant";
 
+  // Used for creating tables and tenants, and uploading segments. Since uncompressed segments are already available
+  // for PerfBenchmarkDriver, servers can directly load the segments. PinotHelixResourceManager.addNewSegment(), which
+  // updates ZKSegmentMetadata only, is not exposed from controller API so we need to update segments directly via
+  // PinotHelixResourceManager.
   private PinotHelixResourceManager _helixResourceManager;
 
   public PerfBenchmarkDriver(PerfBenchmarkDriverConf conf) {
@@ -164,7 +171,6 @@ public class PerfBenchmarkDriver {
     startServer();
     startHelixResourceManager();
     configureResources();
-    uploadIndexSegments();
     waitForExternalViewUpdate(_zkAddress, _clusterName, 60 * 1000L);
     postQueries();
   }
@@ -187,7 +193,8 @@ public class PerfBenchmarkDriver {
     }
     ControllerConf conf = getControllerConf();
     LOGGER.info("Starting controller at {}", _controllerAddress);
-    new ControllerStarter(conf).start();
+    _controllerStarter = new ControllerStarter(conf);
+    _controllerStarter.start();
   }
 
   private ControllerConf getControllerConf() {
@@ -205,16 +212,16 @@ public class PerfBenchmarkDriver {
 
   private void startBroker()
       throws Exception {
-    if (!_conf.isStartBroker()) {
+    if (!_conf.shouldStartBroker()) {
       LOGGER.info("Skipping start broker step. Assumes broker is already started.");
       return;
     }
-    Configuration brokerConfiguration = new PropertiesConfiguration();
+    Configuration brokerConf = new BaseConfiguration();
     String brokerInstanceName = "Broker_localhost_" + CommonConstants.Helix.DEFAULT_BROKER_QUERY_PORT;
-    brokerConfiguration.setProperty(CommonConstants.Helix.Instance.INSTANCE_ID_KEY, brokerInstanceName);
-    brokerConfiguration.setProperty(CommonConstants.Broker.CONFIG_OF_BROKER_TIMEOUT_MS, BROKER_TIMEOUT_MS);
+    brokerConf.setProperty(CommonConstants.Helix.Instance.INSTANCE_ID_KEY, brokerInstanceName);
+    brokerConf.setProperty(CommonConstants.Broker.CONFIG_OF_BROKER_TIMEOUT_MS, BROKER_TIMEOUT_MS);
     LOGGER.info("Starting broker instance: {}", brokerInstanceName);
-    new HelixBrokerStarter(_clusterName, _zkAddress, brokerConfiguration);
+    new HelixBrokerStarter(brokerConf, _clusterName, _zkAddress).start();
   }
 
   private void startServer()
@@ -237,18 +244,52 @@ public class PerfBenchmarkDriver {
 
   private void startHelixResourceManager()
       throws Exception {
-    _helixResourceManager = new PinotHelixResourceManager(getControllerConf());
-    _helixResourceManager.start();
+    if (_conf.shouldStartController()) {
+      // helix resource manager is already available at this time if controller is started
+      _helixResourceManager = _controllerStarter.getHelixResourceManager();
+    } else {
+      // When starting server only, we need to change the controller port to avoid registering controller helix
+      // participant with the same host and port.
+      ControllerConf controllerConf = getControllerConf();
+      controllerConf.setControllerPort(Integer.toString(_conf.getControllerPort() + 1));
+      _helixResourceManager = new PinotHelixResourceManager(controllerConf);
+      String instanceId = controllerConf.getControllerHost() + "_" + controllerConf.getControllerPort();
+      HelixManager helixManager = registerAndConnectAsHelixSpectator(instanceId);
+      _helixResourceManager.start(helixManager);
+    }
 
-    // Create broker tenant.
-    Tenant brokerTenant = new TenantBuilder(_brokerTenantName).setRole(TenantRole.BROKER).setTotalInstances(1).build();
-    _helixResourceManager.createBrokerTenant(brokerTenant);
+    // Create server tenants if required
+    if (_conf.shouldStartServer()) {
+      Tenant serverTenant =
+          new TenantBuilder(_serverTenantName).setRole(TenantRole.SERVER).setTotalInstances(1).setOfflineInstances(1)
+              .build();
+      _helixResourceManager.createServerTenant(serverTenant);
+    }
 
-    // Create server tenant.
-    Tenant serverTenant =
-        new TenantBuilder(_serverTenantName).setRole(TenantRole.SERVER).setTotalInstances(1).setOfflineInstances(1)
-            .build();
-    _helixResourceManager.createServerTenant(serverTenant);
+    // Create broker tenant if required
+    if (_conf.shouldStartBroker()) {
+      Tenant brokerTenant =
+          new TenantBuilder(_brokerTenantName).setRole(TenantRole.BROKER).setTotalInstances(1).build();
+      _helixResourceManager.createBrokerTenant(brokerTenant);
+    }
+  }
+
+  /**
+   * Register and connect to Helix cluster as Spectator role.
+   */
+  private HelixManager registerAndConnectAsHelixSpectator(String instanceId) {
+    HelixManager helixManager =
+        HelixManagerFactory.getZKHelixManager(_clusterName, instanceId, InstanceType.SPECTATOR, _zkAddress);
+
+    try {
+      helixManager.connect();
+      return helixManager;
+    } catch (Exception e) {
+      String errorMsg =
+          String.format("Exception when connecting the instance %s as Spectator role to Helix.", instanceId);
+      LOGGER.error(errorMsg, e);
+      throw new RuntimeException(errorMsg);
+    }
   }
 
   private void configureResources()
@@ -276,32 +317,15 @@ public class PerfBenchmarkDriver {
     _helixResourceManager.addTable(tableConfig);
   }
 
-  private void uploadIndexSegments()
-      throws Exception {
-    if (!_conf.isUploadIndexes()) {
-      LOGGER.info("Skipping upload index segments step.");
-      return;
-    }
-    String indexDirectory = _conf.getIndexDirectory();
-    File[] indexFiles = new File(indexDirectory).listFiles();
-    Preconditions.checkNotNull(indexFiles);
-    try (FileUploadDownloadClient fileUploadDownloadClient = new FileUploadDownloadClient()) {
-      URI uploadSegmentHttpURI = FileUploadDownloadClient.getUploadSegmentHttpURI(_controllerHost, _controllerPort);
-      for (File indexFile : indexFiles) {
-        LOGGER.info("Uploading index segment: {}", indexFile.getAbsolutePath());
-        fileUploadDownloadClient.uploadSegment(uploadSegmentHttpURI, indexFile.getName(), indexFile);
-      }
-    }
-  }
-
   /**
    * Add segment while segment data is already in server data directory.
    *
    * @param segmentMetadata segment metadata.
    */
-  public void addSegment(SegmentMetadata segmentMetadata) {
+  public void addSegment(String tableName, SegmentMetadata segmentMetadata) {
+    String rawTableName = TableNameBuilder.extractRawTableName(tableName);
     _helixResourceManager
-        .addNewSegment(segmentMetadata, "http://" + _controllerAddress + "/" + segmentMetadata.getName());
+        .addNewSegment(rawTableName, segmentMetadata, "http://" + _controllerAddress + "/" + segmentMetadata.getName());
   }
 
   public static void waitForExternalViewUpdate(String zkAddress, final String clusterName, long timeoutInMilliseconds) {

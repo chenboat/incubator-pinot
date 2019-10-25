@@ -31,11 +31,17 @@ import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.apache.commons.configuration.Configuration;
 import org.apache.commons.httpclient.HttpConnectionManager;
 import org.apache.commons.httpclient.MultiThreadedHttpConnectionManager;
 import org.apache.commons.io.FileUtils;
 import org.apache.helix.HelixManager;
+import org.apache.helix.HelixManagerFactory;
+import org.apache.helix.InstanceType;
+import org.apache.helix.SystemPropertyKeys;
+import org.apache.helix.api.listeners.ControllerChangeListener;
+import org.apache.helix.model.MasterSlaveSMD;
 import org.apache.helix.task.TaskDriver;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.metrics.ControllerMeter;
@@ -44,7 +50,9 @@ import org.apache.pinot.common.metrics.MetricsHelper;
 import org.apache.pinot.common.metrics.ValidationMetrics;
 import org.apache.pinot.common.segment.fetcher.SegmentFetcherFactory;
 import org.apache.pinot.common.utils.CommonConstants;
+import org.apache.pinot.common.utils.NetUtil;
 import org.apache.pinot.common.utils.ServiceStatus;
+import org.apache.pinot.common.utils.helix.LeadControllerUtils;
 import org.apache.pinot.controller.api.ControllerAdminApiApplication;
 import org.apache.pinot.controller.api.access.AccessControlFactory;
 import org.apache.pinot.controller.api.events.MetadataEventNotifierFactory;
@@ -52,12 +60,12 @@ import org.apache.pinot.controller.helix.SegmentStatusChecker;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.helix.core.minion.PinotHelixTaskResourceManager;
 import org.apache.pinot.controller.helix.core.minion.PinotTaskManager;
-import org.apache.pinot.controller.helix.core.periodictask.ControllerPeriodicTaskScheduler;
 import org.apache.pinot.controller.helix.core.realtime.PinotLLCRealtimeSegmentManager;
 import org.apache.pinot.controller.helix.core.realtime.PinotRealtimeSegmentManager;
-import org.apache.pinot.controller.helix.core.rebalance.RebalanceSegmentStrategyFactory;
+import org.apache.pinot.controller.helix.core.realtime.SegmentCompletionManager;
 import org.apache.pinot.controller.helix.core.relocation.RealtimeSegmentRelocator;
 import org.apache.pinot.controller.helix.core.retention.RetentionManager;
+import org.apache.pinot.controller.helix.core.statemodel.LeadControllerResourceMasterSlaveStateModelFactory;
 import org.apache.pinot.controller.helix.core.util.HelixSetupUtils;
 import org.apache.pinot.controller.helix.starter.HelixConfig;
 import org.apache.pinot.controller.validation.BrokerResourceValidationManager;
@@ -65,6 +73,7 @@ import org.apache.pinot.controller.validation.OfflineSegmentIntervalChecker;
 import org.apache.pinot.controller.validation.RealtimeSegmentValidationManager;
 import org.apache.pinot.core.crypt.PinotCrypterFactory;
 import org.apache.pinot.core.periodictask.PeriodicTask;
+import org.apache.pinot.core.periodictask.PeriodicTaskScheduler;
 import org.apache.pinot.filesystem.PinotFSFactory;
 import org.glassfish.hk2.utilities.binding.AbstractBinder;
 import org.slf4j.Logger;
@@ -89,12 +98,14 @@ public class ControllerStarter {
 
   private final String _helixZkURL;
   private final String _helixClusterName;
-  private final String _instanceId;
+  private final String _helixControllerInstanceId;
+  private final String _helixParticipantInstanceId;
   private final boolean _isUpdateStateModel;
   private final boolean _enableBatchMessageMode;
   private final ControllerConf.ControllerMode _controllerMode;
 
   private HelixManager _helixControllerManager;
+  private HelixManager _helixParticipantManager;
 
   // Can only be constructed after resource manager getting started
   private OfflineSegmentIntervalChecker _offlineSegmentIntervalChecker;
@@ -104,23 +115,32 @@ public class ControllerStarter {
   private RetentionManager _retentionManager;
   private SegmentStatusChecker _segmentStatusChecker;
   private PinotTaskManager _taskManager;
-  private ControllerPeriodicTaskScheduler _controllerPeriodicTaskScheduler;
+  private PeriodicTaskScheduler _periodicTaskScheduler;
   private PinotHelixTaskResourceManager _helixTaskResourceManager;
   private PinotRealtimeSegmentManager _realtimeSegmentsManager;
+  private PinotLLCRealtimeSegmentManager _pinotLLCRealtimeSegmentManager;
+  private SegmentCompletionManager _segmentCompletionManager;
+  private LeadControllerManager _leadControllerManager;
   private List<ServiceStatus.ServiceStatusCallback> _serviceStatusCallbackList;
 
   public ControllerStarter(ControllerConf conf) {
     _config = conf;
+    inferHostnameIfNeeded(_config);
+    setupHelixSystemProperties();
+
     _controllerMode = conf.getControllerMode();
     // Helix related settings.
     _helixZkURL = HelixConfig.getAbsoluteZkPathForHelix(_config.getZkStr());
     _helixClusterName = _config.getHelixClusterName();
-    _instanceId = conf.getControllerHost() + "_" + conf.getControllerPort();
+    String host = conf.getControllerHost();
+    int port = Integer.parseInt(conf.getControllerPort());
+    _helixControllerInstanceId = host + "_" + port;
+    _helixParticipantInstanceId = LeadControllerUtils.generateParticipantInstanceId(host, port);
     _isUpdateStateModel = _config.isUpdateSegmentStateModel();
     _enableBatchMessageMode = _config.getEnableBatchMessageMode();
 
     _metricsRegistry = new MetricsRegistry();
-    _controllerMetrics = new ControllerMetrics(_metricsRegistry);
+    _controllerMetrics = new ControllerMetrics(conf.getMetricsPrefix(), _metricsRegistry);
     _serviceStatusCallbackList = new ArrayList<>();
     if (_controllerMode == ControllerConf.ControllerMode.HELIX_ONLY) {
       _adminApp = null;
@@ -136,6 +156,29 @@ public class ControllerStarter {
     }
   }
 
+  private void inferHostnameIfNeeded(ControllerConf config) {
+    if (config.getControllerHost() == null) {
+      if (config.getBoolean(CommonConstants.Helix.SET_INSTANCE_ID_TO_HOSTNAME_KEY, false)) {
+        final String inferredHostname = NetUtil.getHostnameOrAddress();
+        if (inferredHostname != null) {
+          config.setControllerHost(inferredHostname);
+        } else {
+          throw new RuntimeException(
+              "Failed to infer controller hostname, please set controller instanceId explicitly in config file.");
+        }
+      }
+    }
+  }
+
+  private void setupHelixSystemProperties() {
+    // NOTE: Helix will disconnect the manager and disable the instance if it detects flapping (too frequent disconnect
+    // from ZooKeeper). Setting flapping time window to a small value can avoid this from happening. Helix ignores the
+    // non-positive value, so set the default value as 1.
+    System.setProperty(SystemPropertyKeys.FLAPPING_TIME_WINDOW, _config
+        .getString(CommonConstants.Helix.CONFIG_OF_CONTROLLER_FLAPPING_TIME_WINDOW_MS,
+            CommonConstants.Helix.DEFAULT_FLAPPING_TIME_WINDOW_MS));
+  }
+
   public PinotHelixResourceManager getHelixResourceManager() {
     return _helixResourceManager;
   }
@@ -145,6 +188,10 @@ public class ControllerStarter {
    */
   public HelixManager getHelixControllerManager() {
     return _helixControllerManager;
+  }
+
+  public LeadControllerManager getLeadControllerManager() {
+    return _leadControllerManager;
   }
 
   public OfflineSegmentIntervalChecker getOfflineSegmentIntervalChecker() {
@@ -174,6 +221,7 @@ public class ControllerStarter {
     // Set up controller metrics
     MetricsHelper.initializeMetrics(_config.subset(METRICS_REGISTRY_NAME));
     MetricsHelper.registerMetricsRegistry(_metricsRegistry);
+    _controllerMetrics.initializeGlobalMeters();
 
     switch (_controllerMode) {
       case DUAL:
@@ -190,18 +238,20 @@ public class ControllerStarter {
         LOGGER.error("Invalid mode: " + _controllerMode);
     }
 
-    ServiceStatus.setServiceStatusCallback(new ServiceStatus.MultipleCallbackServiceStatusCallback(_serviceStatusCallbackList));
-    _controllerMetrics.initializeGlobalMeters();
+    ServiceStatus
+        .setServiceStatusCallback(new ServiceStatus.MultipleCallbackServiceStatusCallback(_serviceStatusCallbackList));
   }
 
   private void setUpHelixController() {
     // Register and connect instance as Helix controller.
     LOGGER.info("Starting Helix controller");
-    _helixControllerManager = HelixSetupUtils
-        .setup(_helixClusterName, _helixZkURL, _instanceId, _isUpdateStateModel, _enableBatchMessageMode);
+    _helixControllerManager =
+        HelixSetupUtils.setupHelixController(_helixClusterName, _helixZkURL, _helixControllerInstanceId);
 
     // Emit helix controller metrics
-    _controllerMetrics.addCallbackGauge("helix.connected", () -> _helixControllerManager.isConnected() ? 1L : 0L);
+    _controllerMetrics.addCallbackGauge(CommonConstants.Helix.INSTANCE_CONNECTED_METRIC_NAME,
+        () -> _helixControllerManager.isConnected() ? 1L : 0L);
+    // Deprecated, since getting the leadership of Helix does not mean Helix has been ready for pinot.
     _controllerMetrics.addCallbackGauge("helix.leader", () -> _helixControllerManager.isLeader() ? 1L : 0L);
     _helixControllerManager.addPreConnectCallback(
         () -> _controllerMetrics.addMeteredGlobalValue(ControllerMeter.HELIX_ZOOKEEPER_RECONNECTS, 1L));
@@ -210,48 +260,61 @@ public class ControllerStarter {
   }
 
   private void setUpPinotController() {
-    // Note: Right now we don't allow pinot-only mode to be used in production yet.
-    // Now we only have this mode used in tests.
-    // TODO: Remove this logic once all the helix separation PRs are committed.
-    if (_controllerMode == ControllerConf.ControllerMode.PINOT_ONLY && !isPinotOnlyModeSupported()) {
-      throw new RuntimeException("Pinot only controller currently isn't supported in production yet.");
-    }
+    // Set up Pinot cluster in Helix if needed
+    HelixSetupUtils.setupPinotCluster(_helixClusterName, _helixZkURL, _isUpdateStateModel, _enableBatchMessageMode);
 
     // Start all components
     initPinotFSFactory();
     initSegmentFetcherFactory();
     initPinotCrypterFactory();
 
-    LOGGER.info("Starting Pinot Helix resource manager and connecting to Zookeeper");
-    _helixResourceManager.start();
-    HelixManager helixParticipantManager = _helixResourceManager.getHelixZkManager();
+    LOGGER.info("Initializing Helix participant manager");
+    _helixParticipantManager = HelixManagerFactory
+        .getZKHelixManager(_helixClusterName, _helixParticipantInstanceId, InstanceType.PARTICIPANT, _helixZkURL);
 
-    LOGGER.info("Init controller leadership manager");
-    // Note: Currently leadership depends on helix controller, thus assign helixControllerManager to ControllerLeadershipManager.
-    // TODO: In the future when Helix separation is completed, leadership only depends on the master in leadControllerResource, and ControllerLeadershipManager will be removed.
-    if (_helixControllerManager != null) {
-      ControllerLeadershipManager.init(_helixControllerManager);
-    } else {
-      ControllerLeadershipManager.init(helixParticipantManager);
-    }
+    // LeadControllerManager needs to be initialized before registering as Helix participant.
+    LOGGER.info("Initializing lead controller manager");
+    _leadControllerManager = new LeadControllerManager(_helixParticipantManager, _controllerMetrics);
+
+    LOGGER.info("Registering and connecting Helix participant manager as Helix Participant role");
+    registerAndConnectAsHelixParticipant();
+
+    // LeadControllerManager needs to be started after the connection
+    // as it can check Helix leadership and resource config only after connecting to Helix cluster.
+    LOGGER.info("Starting lead controller manager");
+    _leadControllerManager.start();
+
+    LOGGER.info("Starting Pinot Helix resource manager and connecting to Zookeeper");
+    _helixResourceManager.start(_helixParticipantManager);
 
     LOGGER.info("Starting task resource manager");
-    _helixTaskResourceManager = new PinotHelixTaskResourceManager(new TaskDriver(helixParticipantManager));
+    _helixTaskResourceManager = new PinotHelixTaskResourceManager(new TaskDriver(_helixParticipantManager));
 
     // Helix resource manager must be started in order to create PinotLLCRealtimeSegmentManager
     LOGGER.info("Starting realtime segment manager");
-    PinotLLCRealtimeSegmentManager.create(_helixResourceManager, _config, _controllerMetrics);
-    _realtimeSegmentsManager = new PinotRealtimeSegmentManager(_helixResourceManager);
-    _realtimeSegmentsManager.start(_controllerMetrics);
+    _pinotLLCRealtimeSegmentManager =
+        new PinotLLCRealtimeSegmentManager(_helixResourceManager, _config, _controllerMetrics);
+    // TODO: Need to put this inside HelixResourceManager when HelixControllerLeadershipManager is removed.
+    _helixResourceManager.registerPinotLLCRealtimeSegmentManager(_pinotLLCRealtimeSegmentManager);
+    _segmentCompletionManager =
+        new SegmentCompletionManager(_helixParticipantManager, _pinotLLCRealtimeSegmentManager, _controllerMetrics,
+            _leadControllerManager, _config.getSegmentCommitTimeoutSeconds());
+
+    if (_config.getHLCTablesAllowed()) {
+      LOGGER.info("Realtime tables with High Level consumers will be supported");
+      _realtimeSegmentsManager = new PinotRealtimeSegmentManager(_helixResourceManager, _leadControllerManager);
+      _realtimeSegmentsManager.start(_controllerMetrics);
+    } else {
+      LOGGER.info("Realtime tables with High Level consumers will NOT be supported");
+      _realtimeSegmentsManager = null;
+    }
 
     // Setting up periodic tasks
     List<PeriodicTask> controllerPeriodicTasks = setupControllerPeriodicTasks();
     LOGGER.info("Init controller periodic tasks scheduler");
-    _controllerPeriodicTaskScheduler = new ControllerPeriodicTaskScheduler();
-    _controllerPeriodicTaskScheduler.init(controllerPeriodicTasks);
-
-    LOGGER.info("Creating rebalance segments factory");
-    RebalanceSegmentStrategyFactory.createInstance(helixParticipantManager);
+    _periodicTaskScheduler = new PeriodicTaskScheduler();
+    _periodicTaskScheduler.init(controllerPeriodicTasks);
+    _periodicTaskScheduler.start();
 
     String accessControlFactoryClass = _config.getAccessControlFactoryClass();
     LOGGER.info("Use class: {} as the AccessControlFactory", accessControlFactoryClass);
@@ -278,12 +341,14 @@ public class ControllerStarter {
         bind(_config).to(ControllerConf.class);
         bind(_helixResourceManager).to(PinotHelixResourceManager.class);
         bind(_helixTaskResourceManager).to(PinotHelixTaskResourceManager.class);
+        bind(_segmentCompletionManager).to(SegmentCompletionManager.class);
         bind(_taskManager).to(PinotTaskManager.class);
         bind(connectionManager).to(HttpConnectionManager.class);
         bind(_executorService).to(Executor.class);
         bind(_controllerMetrics).to(ControllerMetrics.class);
         bind(accessControlFactory).to(AccessControlFactory.class);
         bind(metadataEventNotifierFactory).to(MetadataEventNotifierFactory.class);
+        bind(_leadControllerManager).to(LeadControllerManager.class);
       }
     });
 
@@ -314,7 +379,7 @@ public class ControllerStarter {
       }
     });
 
-    _serviceStatusCallbackList.add(generateServiceStatusCallback(helixParticipantManager));
+    _serviceStatusCallbackList.add(generateServiceStatusCallback(_helixParticipantManager));
   }
 
   private ServiceStatus.ServiceStatusCallback generateServiceStatusCallback(HelixManager helixManager) {
@@ -381,6 +446,41 @@ public class ControllerStarter {
     }
   }
 
+  /**
+   * Registers, connects to Helix cluster as PARTICIPANT role, and adds listeners.
+   */
+  private void registerAndConnectAsHelixParticipant() {
+    // Registers customized Master-Slave state model to state machine engine, which is for calculating participant assignment in lead controller resource.
+    _helixParticipantManager.getStateMachineEngine().registerStateModelFactory(MasterSlaveSMD.name,
+        new LeadControllerResourceMasterSlaveStateModelFactory(_leadControllerManager));
+
+    // Connects to cluster.
+    try {
+      _helixParticipantManager.connect();
+    } catch (Exception e) {
+      String errorMsg = String.format("Exception when connecting the instance %s as Participant role to Helix.",
+          _helixParticipantInstanceId);
+      LOGGER.error(errorMsg, e);
+      throw new RuntimeException(errorMsg);
+    }
+
+    LOGGER.info("Registering helix controller listener");
+    // This registration is not needed when the leadControllerResource is enabled.
+    // However, the resource can be disabled sometime while the cluster is in operation, so we keep it here. Plus, it does not add much overhead.
+    // At some point in future when we stop supporting the disabled resource, we will remove this line altogether and the logic that goes with it.
+    _helixParticipantManager.addControllerListener(
+        (ControllerChangeListener) changeContext -> _leadControllerManager.onHelixControllerChange());
+
+    LOGGER.info("Registering resource config listener");
+    try {
+      _helixParticipantManager.addResourceConfigChangeListener(
+          (resourceConfigList, changeContext) -> _leadControllerManager.onResourceConfigChange());
+    } catch (Exception e) {
+      throw new RuntimeException(
+          "Error registering resource config listener for " + CommonConstants.Helix.LEAD_CONTROLLER_RESOURCE_NAME, e);
+    }
+  }
+
   public ControllerConf.ControllerMode getControllerMode() {
     return _controllerMode;
   }
@@ -389,57 +489,68 @@ public class ControllerStarter {
   protected List<PeriodicTask> setupControllerPeriodicTasks() {
     LOGGER.info("Setting up periodic tasks");
     List<PeriodicTask> periodicTasks = new ArrayList<>();
-    _taskManager = new PinotTaskManager(_helixTaskResourceManager, _helixResourceManager, _config, _controllerMetrics);
+    _taskManager =
+        new PinotTaskManager(_helixTaskResourceManager, _helixResourceManager, _leadControllerManager, _config,
+            _controllerMetrics);
     periodicTasks.add(_taskManager);
-    _retentionManager = new RetentionManager(_helixResourceManager, _config, _controllerMetrics);
+    _retentionManager =
+        new RetentionManager(_helixResourceManager, _leadControllerManager, _config, _controllerMetrics);
     periodicTasks.add(_retentionManager);
     _offlineSegmentIntervalChecker =
-        new OfflineSegmentIntervalChecker(_config, _helixResourceManager, new ValidationMetrics(_metricsRegistry),
-            _controllerMetrics);
+        new OfflineSegmentIntervalChecker(_config, _helixResourceManager, _leadControllerManager,
+            new ValidationMetrics(_metricsRegistry), _controllerMetrics);
     periodicTasks.add(_offlineSegmentIntervalChecker);
-    _realtimeSegmentValidationManager = new RealtimeSegmentValidationManager(_config, _helixResourceManager,
-        PinotLLCRealtimeSegmentManager.getInstance(), new ValidationMetrics(_metricsRegistry), _controllerMetrics);
+    _realtimeSegmentValidationManager =
+        new RealtimeSegmentValidationManager(_config, _helixResourceManager, _leadControllerManager,
+            _pinotLLCRealtimeSegmentManager, new ValidationMetrics(_metricsRegistry), _controllerMetrics);
     periodicTasks.add(_realtimeSegmentValidationManager);
     _brokerResourceValidationManager =
-        new BrokerResourceValidationManager(_config, _helixResourceManager, _controllerMetrics);
+        new BrokerResourceValidationManager(_config, _helixResourceManager, _leadControllerManager, _controllerMetrics);
     periodicTasks.add(_brokerResourceValidationManager);
-    _segmentStatusChecker = new SegmentStatusChecker(_helixResourceManager, _config, _controllerMetrics);
+    _segmentStatusChecker =
+        new SegmentStatusChecker(_helixResourceManager, _leadControllerManager, _config, _controllerMetrics);
     periodicTasks.add(_segmentStatusChecker);
-    _realtimeSegmentRelocator = new RealtimeSegmentRelocator(_helixResourceManager, _config, _controllerMetrics);
+    _realtimeSegmentRelocator =
+        new RealtimeSegmentRelocator(_helixResourceManager, _leadControllerManager, _config, _controllerMetrics,
+            _executorService);
     periodicTasks.add(_realtimeSegmentRelocator);
 
     return periodicTasks;
   }
 
   public void stop() {
-      switch (_controllerMode) {
-        case DUAL:
-          stopPinotController();
-          stopHelixController();
-          break;
-        case PINOT_ONLY:
-          stopPinotController();
-          break;
-        case HELIX_ONLY:
-          stopHelixController();
-          break;
-      }
+    switch (_controllerMode) {
+      case DUAL:
+        stopPinotController();
+        stopHelixController();
+        break;
+      case PINOT_ONLY:
+        stopPinotController();
+        break;
+      case HELIX_ONLY:
+        stopHelixController();
+        break;
+    }
   }
 
   private void stopHelixController() {
-    LOGGER.info("Disconnecting helix zk manager");
+    LOGGER.info("Disconnecting helix controller zk manager");
     _helixControllerManager.disconnect();
   }
 
   private void stopPinotController() {
     try {
-      // Stopping ControllerLeadershipManager has to be done before stopping HelixResourceManager.
-      LOGGER.info("Stopping controller leadership manager");
-      ControllerLeadershipManager.getInstance().stop();
+      // Stopping periodic tasks has to be done before stopping HelixResourceManager.
+      // Stop controller periodic task.
+      LOGGER.info("Stopping controller periodic tasks");
+      _periodicTaskScheduler.stop();
+
+      LOGGER.info("Stopping lead controller manager");
+      _leadControllerManager.stop();
 
       // Stop PinotLLCSegmentManager before stopping Jersey API. It is possible that stopping Jersey API
       // may interrupt the handlers waiting on an I/O.
-      PinotLLCRealtimeSegmentManager.getInstance().stop();
+      _pinotLLCRealtimeSegmentManager.stop();
 
       LOGGER.info("Closing PinotFS classes");
       PinotFSFactory.shutdown();
@@ -447,23 +558,23 @@ public class ControllerStarter {
       LOGGER.info("Stopping Jersey admin API");
       _adminApp.stop();
 
-      LOGGER.info("Stopping realtime segment manager");
-      _realtimeSegmentsManager.stop();
+      if (_realtimeSegmentsManager != null) {
+        LOGGER.info("Stopping realtime segment manager");
+        _realtimeSegmentsManager.stop();
+      }
 
       LOGGER.info("Stopping resource manager");
       _helixResourceManager.stop();
 
-      LOGGER.info("Stopping rebalance segments factory");
-      RebalanceSegmentStrategyFactory.stop();
+      LOGGER.info("Disconnecting helix participant zk manager");
+      _helixParticipantManager.disconnect();
 
+      LOGGER.info("Shutting down executor service");
       _executorService.shutdownNow();
+      _executorService.awaitTermination(10L, TimeUnit.SECONDS);
     } catch (final Exception e) {
       LOGGER.error("Caught exception while shutting down", e);
     }
-  }
-
-  public boolean isPinotOnlyModeSupported() {
-    return false;
   }
 
   public MetricsRegistry getMetricsRegistry() {

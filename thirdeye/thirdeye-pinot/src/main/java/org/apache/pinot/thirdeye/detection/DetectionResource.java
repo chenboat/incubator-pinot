@@ -20,10 +20,9 @@
 package org.apache.pinot.thirdeye.detection;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.Multimaps;
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import io.swagger.annotations.ApiParam;
 import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -46,23 +45,26 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import org.apache.commons.collections.MapUtils;
 import org.apache.pinot.thirdeye.api.Constants;
 import org.apache.pinot.thirdeye.constant.AnomalyFeedbackType;
 import org.apache.pinot.thirdeye.constant.AnomalyResultSource;
 import org.apache.pinot.thirdeye.dashboard.resources.v2.ResourceUtils;
 import org.apache.pinot.thirdeye.dashboard.resources.v2.rootcause.AnomalyEventFormatter;
+import org.apache.pinot.thirdeye.dataframe.DataFrame;
+import org.apache.pinot.thirdeye.dataframe.util.MetricSlice;
 import org.apache.pinot.thirdeye.datalayer.bao.DatasetConfigManager;
 import org.apache.pinot.thirdeye.datalayer.bao.DetectionAlertConfigManager;
 import org.apache.pinot.thirdeye.datalayer.bao.DetectionConfigManager;
+import org.apache.pinot.thirdeye.datalayer.bao.EvaluationManager;
 import org.apache.pinot.thirdeye.datalayer.bao.EventManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MergedAnomalyResultManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MetricConfigManager;
+import org.apache.pinot.thirdeye.datalayer.bao.TaskManager;
 import org.apache.pinot.thirdeye.datalayer.dto.AnomalyFeedbackDTO;
+import org.apache.pinot.thirdeye.datalayer.dto.DatasetConfigDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.DetectionAlertConfigDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.DetectionConfigDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
-import org.apache.pinot.thirdeye.datalayer.dto.MetricConfigDTO;
 import org.apache.pinot.thirdeye.datalayer.util.Predicate;
 import org.apache.pinot.thirdeye.datasource.DAORegistry;
 import org.apache.pinot.thirdeye.datasource.ThirdEyeCacheRegistry;
@@ -72,13 +74,21 @@ import org.apache.pinot.thirdeye.datasource.loader.DefaultTimeSeriesLoader;
 import org.apache.pinot.thirdeye.datasource.loader.TimeSeriesLoader;
 import org.apache.pinot.thirdeye.detection.finetune.GridSearchTuningAlgorithm;
 import org.apache.pinot.thirdeye.detection.finetune.TuningAlgorithm;
+import org.apache.pinot.thirdeye.formatter.DetectionAlertConfigFormatter;
+import org.apache.pinot.thirdeye.formatter.DetectionConfigFormatter;
+import org.apache.pinot.thirdeye.detection.health.DetectionHealth;
 import org.apache.pinot.thirdeye.detection.spi.model.AnomalySlice;
-import org.apache.pinot.thirdeye.detection.spi.model.TimeSeries;
+import org.apache.pinot.thirdeye.detector.function.BaseAnomalyFunction;
+import org.apache.pinot.thirdeye.rootcause.impl.MetricEntity;
+import org.apache.pinot.thirdeye.util.AnomalyOffset;
 import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
 import org.joda.time.Interval;
 import org.quartz.CronExpression;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.pinot.thirdeye.dataframe.util.DataFrameUtils.*;
 
 
 @Path("/detection")
@@ -98,7 +108,11 @@ public class DetectionResource {
   private final DetectionPipelineLoader loader;
   private final DataProvider provider;
   private final DetectionConfigManager configDAO;
+  private final EvaluationManager evaluationDAO;
+  private final TaskManager taskDAO;
   private final DetectionAlertConfigManager detectionAlertConfigDAO;
+  private final DetectionConfigFormatter detectionConfigFormatter;
+  private final DetectionAlertConfigFormatter subscriptionConfigFormatter;
 
   public DetectionResource() {
     this.metricDAO = DAORegistry.getInstance().getMetricConfigDAO();
@@ -107,6 +121,8 @@ public class DetectionResource {
     this.anomalyDAO = DAORegistry.getInstance().getMergedAnomalyResultDAO();
     this.configDAO = DAORegistry.getInstance().getDetectionConfigManager();
     this.detectionAlertConfigDAO = DAORegistry.getInstance().getDetectionAlertConfigManager();
+    this.evaluationDAO = DAORegistry.getInstance().getEvaluationManager();
+    this.taskDAO = DAORegistry.getInstance().getTaskDAO();
 
     TimeSeriesLoader timeseriesLoader =
         new DefaultTimeSeriesLoader(metricDAO, datasetDAO, ThirdEyeCacheRegistry.getInstance().getQueryCache());
@@ -117,7 +133,9 @@ public class DetectionResource {
 
     this.loader = new DetectionPipelineLoader();
 
-    this.provider = new DefaultDataProvider(metricDAO, datasetDAO, eventDAO, anomalyDAO, timeseriesLoader, aggregationLoader, loader);
+    this.provider = new DefaultDataProvider(metricDAO, datasetDAO, eventDAO, anomalyDAO, evaluationDAO, timeseriesLoader, aggregationLoader, loader);
+    this.detectionConfigFormatter = new DetectionConfigFormatter(metricDAO, datasetDAO);
+    this.subscriptionConfigFormatter = new DetectionAlertConfigFormatter();
   }
 
   @Path("/{id}")
@@ -125,7 +143,7 @@ public class DetectionResource {
   @ApiOperation("get a detection config with yaml")
   public Response getDetectionConfig(@ApiParam("the detection config id") @PathParam("id") long id){
     DetectionConfigDTO config = this.configDAO.findById(id);
-    return Response.ok(config).build();
+    return Response.ok(this.detectionConfigFormatter.format(config)).build();
   }
 
   @Path("/notification/{id}")
@@ -133,7 +151,15 @@ public class DetectionResource {
   @ApiOperation("get a detection alert config with yaml")
   public Response getDetectionAlertConfig(@ApiParam("the detection alert config id") @PathParam("id") long id){
     DetectionAlertConfigDTO config = this.detectionAlertConfigDAO.findById(id);
-    return Response.ok(config).build();
+    return Response.ok(this.subscriptionConfigFormatter.format(config)).build();
+  }
+
+  @Path("/dataset")
+  @GET
+  @ApiOperation("get a dataset config by name")
+  public Response getDetectionAlertConfig(@ApiParam("the dataset name") @QueryParam("name") String name){
+    DatasetConfigDTO dataset = this.datasetDAO.findByDataset(name);
+    return Response.ok(dataset).build();
   }
 
   @Path("/subscription-groups/{id}")
@@ -147,7 +173,7 @@ public class DetectionResource {
         subscriptionGroupAlertDTOs.add(alertConfigDTO);
       }
     }
-    return Response.ok(new ArrayList<>(subscriptionGroupAlertDTOs)).build();
+    return Response.ok(subscriptionGroupAlertDTOs.stream().map(this.subscriptionConfigFormatter::format).collect(Collectors.toList())).build();
   }
 
 
@@ -156,7 +182,7 @@ public class DetectionResource {
   @ApiOperation("get all detection alert configs")
   public Response getAllSubscriptionGroups(){
     List<DetectionAlertConfigDTO> detectionAlertConfigDTOs = this.detectionAlertConfigDAO.findAll();
-    return Response.ok(detectionAlertConfigDTOs).build();
+    return Response.ok(detectionAlertConfigDTOs.stream().map(this.subscriptionConfigFormatter::format).collect(Collectors.toList())).build();
   }
 
   @Path("{id}/anomalies")
@@ -194,8 +220,8 @@ public class DetectionResource {
     config.setId(Long.MAX_VALUE);
     config.setName("preview");
     config.setDescription("previewing the detection");
-    config.setProperties(MapUtils.getMap(properties, "properties"));
-    config.setComponentSpecs(MapUtils.getMap(properties, "componentSpecs"));
+    config.setProperties(ConfigUtils.getMap(properties.get("properties")));
+    config.setComponentSpecs(ConfigUtils.getMap(properties.get("componentSpecs")));
 
     DetectionPipeline pipeline = this.loader.from(this.provider, config, start, end);
     DetectionPipelineResult result = pipeline.run();
@@ -230,7 +256,7 @@ public class DetectionResource {
     return Response.ok(gridSearch.bestDetectionConfig().getProperties()).build();
   }
 
-  @POST
+  @GET
   @Path("/preview/{id}")
   @ApiOperation("preview a detection with a existing detection config")
   public Response detectionPreview(
@@ -459,7 +485,7 @@ public class DetectionResource {
       return Response.serverError().entity(responseMessage).build();
     }
 
-    LOG.info("Replay detection pipeline {} generated {} anomalies.", detectionId, result.anomalies.size());
+    LOG.info("Replay detection pipeline {} generated {} anomalies.", detectionId, result.getAnomalies().size());
     return Response.ok(result).build();
   }
 
@@ -515,23 +541,59 @@ public class DetectionResource {
   }
 
   @GET
-  @ApiOperation("get the predicted baseline for an anomaly within a time range")
+  @ApiOperation("get the current time series and predicted baselines for an anomaly within a time range")
   @Path(value = "/predicted-baseline/{anomalyId}")
   public Response getPredictedBaseline(
     @PathParam("anomalyId") @ApiParam("anomalyId") long anomalyId,
-      @QueryParam("start") long start,
-      @QueryParam("end") long end
+      @ApiParam("Start time for the predicted baselines") @QueryParam("start") long start,
+      @ApiParam("End time for the predicted baselines") @QueryParam("end") long end,
+      @ApiParam("Add padding to the window based on metric granularity") @QueryParam("padding") @DefaultValue("false") boolean padding
   ) throws Exception {
     MergedAnomalyResultDTO anomaly = anomalyDAO.findById(anomalyId);
     if (anomaly == null) {
       throw new IllegalArgumentException(String.format("Could not resolve anomaly id %d", anomalyId));
     }
-    MetricConfigDTO metric = this.metricDAO.findByMetricAndDataset(anomaly.getMetric(), anomaly.getCollection());
-    if (metric == null) {
-      throw new IllegalArgumentException(String.format("Could not resolve metric '%s' in dataset '%s' for anomaly id %d", anomaly.getMetric(), anomaly.getCollection(), anomaly.getId()));
+    if (padding) {
+      // add paddings for the time range
+      DatasetConfigDTO dataset = this.datasetDAO.findByDataset(anomaly.getCollection());
+      if (dataset == null) {
+        throw new IllegalArgumentException(String.format("Could not resolve dataset '%s' for anomaly id %d", anomaly.getCollection(), anomalyId));
+      }
+      AnomalyOffset offsets = BaseAnomalyFunction.getDefaultOffsets(dataset);
+      DateTimeZone dataTimeZone = DateTimeZone.forID(dataset.getTimezone());
+      start = new DateTime(start, dataTimeZone).minus(offsets.getPreOffsetPeriod()).getMillis();
+      end = new DateTime(end, dataTimeZone).plus(offsets.getPostOffsetPeriod()).getMillis();
     }
-    TimeSeries ts = DetectionUtils.getBaselineTimeseries(anomaly, Multimaps.forMap(anomaly.getDimensions()), metric.getId(), configDAO.findById(anomaly.getDetectionConfigId()), start, end, loader, provider);
-    return Response.ok(ts.getDataFrame()).build();
+    MetricEntity me = MetricEntity.fromURN(anomaly.getMetricUrn());
+    DataFrame baselineTimeseries = DetectionUtils.getBaselineTimeseries(anomaly, me.getFilters(), me.getId(),
+        configDAO.findById(anomaly.getDetectionConfigId()), start, end, loader, provider).getDataFrame();
+    if (!baselineTimeseries.contains(COL_CURRENT)) {
+      // add current time series if not exists
+      MetricSlice currentSlice = MetricSlice.from(me.getId(), start, end, me.getFilters());
+      DataFrame dfCurrent = this.provider.fetchTimeseries(Collections.singleton(currentSlice)).get(currentSlice).renameSeries(COL_VALUE, COL_CURRENT);
+      baselineTimeseries = dfCurrent.joinOuter(baselineTimeseries);
+    }
+    return Response.ok(baselineTimeseries).build();
   }
 
+
+  @GET
+  @Path(value = "/health/{id}")
+  @ApiOperation("Get the detection health metrics and statuses for a detection config")
+  public Response getDetectionHealth(@PathParam("id") @ApiParam("detection config id") long id,
+      @ApiParam("Start time for the the health metric") @QueryParam("start") long start,
+      @ApiParam("End time for the the health metric") @QueryParam("end") long end,
+      @ApiParam("Max number of detection tasks returned") @QueryParam("limit") @DefaultValue("500") long limit) {
+    DetectionHealth health;
+    try {
+      health = new DetectionHealth.Builder(id, start, end).addRegressionStatus(this.evaluationDAO)
+          .addAnomalyCoverageStatus(this.anomalyDAO)
+          .addDetectionTaskStatus(this.taskDAO, limit)
+          .addOverallHealth()
+          .build();
+    } catch (Exception e) {
+      return Response.status(Response.Status.BAD_REQUEST).entity(e.getMessage()).build();
+    }
+    return Response.ok(health).build();
+  }
 }

@@ -50,7 +50,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import java.util.stream.Collectors;
-import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.collections4.CollectionUtils;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.format.ISODateTimeFormat;
@@ -66,6 +66,7 @@ import org.apache.pinot.thirdeye.datasource.ThirdEyeCacheRegistry;
 /**
  * Scheduler for anomaly detection jobs
  */
+@Deprecated
 public class DetectionJobScheduler implements Runnable {
 
   private static final Logger LOG = LoggerFactory.getLogger(DetectionJobScheduler.class);

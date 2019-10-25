@@ -20,9 +20,9 @@
 package org.apache.pinot.thirdeye.dashboard.resources.v2;
 
 import org.apache.pinot.thirdeye.api.Constants;
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import io.swagger.annotations.ApiParam;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -137,7 +137,7 @@ public class DataResource {
   @GET
   @Path("metric/{metricId}")
   public MetricConfigDTO getMetricById(@PathParam("metricId") long metricId) {
-    return metricConfigDAO.findById(metricId);
+    return setDisplayDatasetName(metricConfigDAO.findById(metricId));
   }
 
   //------------- endpoints to fetch summary -------------
@@ -179,7 +179,18 @@ public class DataResource {
         return o1.getAlias().compareTo(o2.getAlias());
       }
     });
+    for (MetricConfigDTO metric : metricConfigs) {
+      setDisplayDatasetName(metric);
+    }
     return metricConfigs;
+  }
+
+  private MetricConfigDTO setDisplayDatasetName(MetricConfigDTO metric) {
+    DatasetConfigDTO dataset = this.datasetConfigDAO.findByDataset(metric.getDataset());
+    if (dataset != null && StringUtils.isNotBlank(metric.getDataset())) {
+      metric.setDataset(dataset.getName());
+    }
+    return metric;
   }
 
   /**

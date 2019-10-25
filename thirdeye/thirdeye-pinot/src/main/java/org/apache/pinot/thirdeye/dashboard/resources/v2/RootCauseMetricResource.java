@@ -34,9 +34,9 @@ import org.apache.pinot.thirdeye.datasource.loader.AggregationLoader;
 import org.apache.pinot.thirdeye.datasource.loader.TimeSeriesLoader;
 import org.apache.pinot.thirdeye.rootcause.impl.MetricEntity;
 import org.apache.pinot.thirdeye.rootcause.timeseries.Baseline;
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import io.swagger.annotations.ApiParam;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -54,9 +54,9 @@ import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
-import org.apache.commons.collections.MapUtils;
-import org.apache.commons.lang.ArrayUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.collections4.MapUtils;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
@@ -90,7 +90,7 @@ public class RootCauseMetricResource {
 
   private static final String ROLLUP_NAME = "OTHER";
 
-  private static final long TIMEOUT = 60000;
+  private static final long TIMEOUT = 600000;
 
   private static final String OFFSET_DEFAULT = "current";
   private static final String TIMEZONE_DEFAULT = "UTC";
@@ -648,8 +648,8 @@ public class RootCauseMetricResource {
     // align to time buckets and request time zone
     long offset = DateTimeZone.forID(timezone).getOffset(slice.getStart());
     long timeGranularity = granularity.toMillis();
-    long start = ((slice.getStart() + offset) / timeGranularity) * timeGranularity - offset;
-    long end = ((slice.getEnd() + offset + timeGranularity - 1) / timeGranularity) * timeGranularity - offset;
+    long start = ((slice.getStart() + offset + timeGranularity - 1) / timeGranularity) * timeGranularity - offset; // round up the start time to time granularity boundary of the requested time zone
+    long end = start + (slice.getEnd() - slice.getStart());
 
     return slice.withStart(start).withEnd(end).withGranularity(granularity);
   }

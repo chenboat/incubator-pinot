@@ -3,8 +3,9 @@ import Route from '@ember/routing/route';
 import fetch from 'fetch';
 import { get, getWithDefault } from '@ember/object';
 import { inject as service } from '@ember/service';
-import { checkStatus } from 'thirdeye-frontend/utils/utils';
+import { checkStatus, formatYamlFilter } from 'thirdeye-frontend/utils/utils';
 import { powerSort } from 'thirdeye-frontend/utils/manage-alert-utils';
+import AuthenticatedRouteMixin from 'ember-simple-auth/mixins/authenticated-route-mixin';
 
 // Maps filter name to alert property for filtering
 const filterToPropertyMap = {
@@ -12,10 +13,12 @@ const filterToPropertyMap = {
   subscription: 'group',
   owner: 'createdBy',
   type: 'type',
-  metric: 'metric'
+  metric: 'metric',
+  dataset: 'collection',
+  granularity: 'granularity'
 };
 
-export default Route.extend({
+export default Route.extend(AuthenticatedRouteMixin, {
 
   // Make duration service accessible
   durationCache: service('services/duration'),
@@ -44,11 +47,12 @@ export default Route.extend({
         dimensions = dimensions.substring(0, dimensions.length-2);
       }
       Object.assign(yamlAlert, {
-        functionName: yamlAlert.detectionName,
-        collection: yamlAlert.dataset,
+        functionName: yamlAlert.name,
+        collection: yamlAlert.datasetNames.toString(),
+        granularity: yamlAlert.monitoringGranularity.toString(),
         type: this._detectionType(yamlAlert),
         exploreDimensions: dimensions,
-        filters: this._formatYamlFilter(yamlAlert.filters),
+        filters: formatYamlFilter(yamlAlert.filters),
         isNewPipeline: true
       });
     }
@@ -66,7 +70,6 @@ export default Route.extend({
         }
       }
     }
-
     // Perform initial filters for our 'primary' filter types and add counts
     const user = getWithDefault(get(this, 'session'), 'data.authenticated.name', null);
     const myAlertIds = user ? this._findAlertIdsByUserGroup(user, model.detectionAlertConfig) : [];
@@ -133,12 +136,37 @@ export default Route.extend({
         title: 'Metrics',
         type: 'select',
         filterKeys: []
+      },
+      {
+        name: 'dataset',
+        title: 'Datasets',
+        type: 'select',
+        filterKeys: []
+      },
+      {
+        name: 'granularity',
+        title: 'Time Granularities',
+        type: 'select',
+        filterKeys: []
       }
     ];
 
     // Fill in select options for these filters ('filterKeys') based on alert properties from model.alerts
     filterBlocksLocal.filter(block => block.type === 'select').forEach((filter) => {
-      const alertPropertyArray = model.alerts.map(alert => alert[filterToPropertyMap[filter.name]]);
+      let alertPropertyArray = [];
+      // Make sure subscription groups are not bundled for filter parameters
+      if (filter.name === 'subscription') {
+        model.alerts.forEach(alert => {
+          let groups = alert[filterToPropertyMap[filter.name]];
+          if (groups) {
+            groups.split(", ").forEach(g => {
+              alertPropertyArray.push(g);
+            });
+          }
+        });
+      } else {
+        alertPropertyArray = model.alerts.map(alert => alert[filterToPropertyMap[filter.name]]);
+      }
       const filterKeys = [ ...new Set(powerSort(alertPropertyArray, null))];
       // Add filterKeys prop to each facet or filter block
       Object.assign(filter, { filterKeys });
@@ -158,7 +186,6 @@ export default Route.extend({
       filterBlocksGlobal,
       filterBlocksLocal,
       filteredAlerts: model.alerts,
-      totalFilteredAlerts: model.alerts.length,
       sortModes: ['Edited:first', 'Edited:last', 'A to Z', 'Z to A'] // Alerts Search Mode options
     });
   },
@@ -173,35 +200,6 @@ export default Route.extend({
       }
     }
     return yamlAlert.pipelineType;
-  },
-
-  /**
-   * The yaml filters formatter. Convert filters in the yaml file in to a legacy filters string
-   * For example, filters = {
-   *   "country": ["us", "cn"],
-   *   "browser": ["chrome"]
-   * }
-   * will be convert into "country=us;country=cn;browser=chrome"
-   *
-   * @method _formatYamlFilter
-   * @param {Map} filters multimap of filters
-   * @return {String} - formatted filters string
-   */
-  _formatYamlFilter(filters) {
-    if (filters){
-      const filterStrings = [];
-      Object.keys(filters).forEach(
-        function(filterKey) {
-          filters[filterKey].forEach(
-            function (filterValue) {
-              filterStrings.push(filterKey + "=" + filterValue);
-            }
-          );
-        }
-      );
-      return filterStrings.join(";");
-    }
-    return "";
   },
 
   /**
@@ -241,6 +239,7 @@ export default Route.extend({
         this.set('session.store.fromUrl', {lastIntentTransition: transition});
       }
     },
+
     error() {
       // The `error` hook is also provided the failed
       // `transition`, which can be stored and later

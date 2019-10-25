@@ -63,7 +63,7 @@ export default Controller.extend({
   /**
    * Filter settings
    */
-  alertFilters: [],
+  alertFilters: {},
   resetFiltersGlobal: null,
   resetFiltersLocal: null,
   alertFoundByName: null,
@@ -72,9 +72,6 @@ export default Controller.extend({
    * The first and broadest entity search property
    */
   topSearchKeyName: 'application',
-
-  // Total displayed alerts
-  totalFilteredAlerts: 0,
 
   // default current Page
   currentPage: 1,
@@ -186,11 +183,18 @@ export default Controller.extend({
 
       setProperties(this, {
         filtersTriggered: false, // reset filter trigger
-        alertFoundByName: false, // reset single found alert var
-        totalFilteredAlerts: filteredAlerts.length
+        alertFoundByName: false // reset single found alert var
       });
 
       return filteredAlerts;
+    }
+  ),
+
+  // Total displayed alerts
+  totalFilteredAlerts: computed(
+    'selectedAlerts.@each',
+    function() {
+      return this.get('selectedAlerts').length;
     }
   ),
 
@@ -235,6 +239,14 @@ export default Controller.extend({
     }
   ),
 
+  // Total displayed alerts
+  currentPageAlerts: computed(
+    'paginatedSelectedAlerts.@each',
+    function() {
+      return this.get('paginatedSelectedAlerts').length;
+    }
+  ),
+
   // String containing all selected filters for display
   activeFiltersString: computed(
     'alertFilters',
@@ -247,12 +259,11 @@ export default Controller.extend({
       };
       let filterStr = 'All Alerts';
       if (isPresent(alertFilters)) {
-        if (alertFilters.primary) {
-          filterStr = alertFilters.primary;
-          set(this, 'primaryFilterVal', filterStr);
-        } else {
-          let filterArr = [get(this, 'primaryFilterVal')];
-          Object.keys(alertFilters).forEach((filterKey) => {
+        filterStr = alertFilters.primary;
+        set(this, 'primaryFilterVal', filterStr);
+        let filterArr = [get(this, 'primaryFilterVal')];
+        Object.keys(alertFilters).forEach((filterKey) => {
+          if (filterKey !== 'primary') {
             const value = alertFilters[filterKey];
             const isStatusAll = filterKey === 'status' && Array.isArray(value) && value.length > 1;
             // Only display valid search filters
@@ -261,9 +272,9 @@ export default Controller.extend({
               let abbrevKey = filterAbbrevMap[filterKey] || filterKey;
               filterArr.push(`${abbrevKey}: ${concatVal}`);
             }
-          });
-          filterStr = filterArr.join(' | ');
-        }
+          }
+        });
+        filterStr = filterArr.join(' | ');
       }
       return filterStr;
     }
@@ -281,7 +292,20 @@ export default Controller.extend({
   _recalculateFilterKeys(alertsCollection, blockItem) {
     const filterToPropertyMap = get(this, 'filterToPropertyMap');
     // Aggregate all existing values for our target properties in the current array collection
-    const alertPropsAsKeys = alertsCollection.map(alert => alert[filterToPropertyMap[blockItem.name]]);
+    let alertPropsAsKeys = [];
+    // Make sure subscription groups are not bundled for filter parameters
+    if (blockItem.name === 'subscription') {
+      alertsCollection.forEach(alert => {
+        let groups = alert[filterToPropertyMap[blockItem.name]];
+        if (groups) {
+          groups.split(", ").forEach(g => {
+            alertPropsAsKeys.push(g);
+          });
+        }
+      });
+    } else {
+      alertPropsAsKeys = alertsCollection.map(alert => alert[filterToPropertyMap[blockItem.name]]);
+    }
     // Add 'none' select option if allowed
     const canInsertNullOption = alertPropsAsKeys.includes(undefined) && blockItem.hasNullOption;
     if (canInsertNullOption) { alertPropsAsKeys.push('none'); }
@@ -312,7 +336,6 @@ export default Controller.extend({
     }
     // Pick up cached alert array for the secondary filters
     let filteredAlerts = get(this, 'filteredAlerts');
-
     // If there is a secondary filter present, filter by it, using the keys we've set up in our filter map
     Object.keys(filterToPropertyMap).forEach((filterKey) => {
       let filterValueArray = filters[filterKey];
@@ -320,7 +343,19 @@ export default Controller.extend({
         let newAlerts = filteredAlerts.filter(alert => {
           // See 'filterToPropertyMap' in route. For filterKey = 'owner' this would map alerts by alert['createdBy'] = x
           const targetAlertPropertyValue = alert[filterToPropertyMap[filterKey]];
-          const alertMeetsCriteria = targetAlertPropertyValue && filterValueArray.includes(targetAlertPropertyValue);
+          let alertMeetsCriteria = false;
+          // In the case for subscription, there can be multiple groups.  We just need to match on one
+          if (filterKey === "subscription") {
+            if (targetAlertPropertyValue) {
+              filterValueArray.forEach(val => {
+                if (targetAlertPropertyValue.includes(val)) {
+                  alertMeetsCriteria = true;
+                }
+              });
+            }
+          } else {
+            alertMeetsCriteria = targetAlertPropertyValue && filterValueArray.includes(targetAlertPropertyValue);
+          }
           const isMatchForNone = !alert.hasOwnProperty(filterToPropertyMap[filterKey]) && filterValueArray.includes('none');
           return alertMeetsCriteria || isMatchForNone;
         });
@@ -415,14 +450,16 @@ export default Controller.extend({
     },
 
     // Handles filter selections (receives array of filter options)
-    userDidSelectFilter(filterArr) {
+    userDidSelectFilter(filterObj) {
+      let alertFilters = get(this, 'alertFilters');
+      const updatedAlertFilters = filterObj.primary ? {primary: filterObj.primary} : {primary: alertFilters.primary, ...filterObj};
       setProperties(this, {
         filtersTriggered: true,
         allowFilterSummary: true,
-        alertFilters: filterArr
+        alertFilters: updatedAlertFilters
       });
       // Reset secondary filters component instance if a primary filter was selected
-      if (Object.keys(filterArr).includes('primary')) {
+      if (Object.keys(filterObj).includes('primary')) {
         setProperties(this, {
           filterBlocksLocal: _.cloneDeep(get(this, 'initialFiltersLocal')),
           resetFiltersLocal: moment().valueOf()

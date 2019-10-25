@@ -90,6 +90,8 @@
                 <exclude>**/RealtimeClusterIntegrationTest.java</exclude>
                 <!-- Covered by ConvertToRawIndexMinionClusterIntegrationTest -->
                 <exclude>**/HybridClusterIntegrationTest.java</exclude>
+                <!-- TODO: re-enable the Minion tests when upgrading to Helix 0.9.1 -->
+                <exclude>**/*MinionClusterIntegrationTest.java</exclude>
               </excludes>
             </configuration>
           </plugin>
@@ -126,6 +128,16 @@
     <dependency>
       <groupId>org.apache.pinot</groupId>
       <artifactId>pinot-tools</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-hdfs</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-mapreduce-client-core</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>com.101tec</groupId>
@@ -188,6 +200,12 @@
       <artifactId>pinot-minion</artifactId>
       <version>${project.version}</version>
       <type>test-jar</type>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.pinot</groupId>
+      <artifactId>pinot-connector-kafka-${kafka.version}</artifactId>
+      <version>${project.version}</version>
+      <scope>runtime</scope>
     </dependency>
     <dependency>
       <groupId>org.testng</groupId>

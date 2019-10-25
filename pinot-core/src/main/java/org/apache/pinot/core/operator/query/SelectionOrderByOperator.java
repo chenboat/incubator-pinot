@@ -18,90 +18,144 @@
  */
 package org.apache.pinot.core.operator.query;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.PriorityQueue;
 import org.apache.pinot.common.request.Selection;
 import org.apache.pinot.common.request.SelectionSort;
+import org.apache.pinot.common.request.transform.TransformExpressionTree;
 import org.apache.pinot.common.utils.DataSchema;
-import org.apache.pinot.core.common.Block;
+import org.apache.pinot.common.utils.primitive.ByteArray;
+import org.apache.pinot.core.common.BlockValSet;
+import org.apache.pinot.core.common.RowBasedBlockValueFetcher;
 import org.apache.pinot.core.indexsegment.IndexSegment;
 import org.apache.pinot.core.operator.BaseOperator;
 import org.apache.pinot.core.operator.ExecutionStatistics;
-import org.apache.pinot.core.operator.ProjectionOperator;
-import org.apache.pinot.core.operator.blocks.DocIdSetBlock;
 import org.apache.pinot.core.operator.blocks.IntermediateResultsBlock;
-import org.apache.pinot.core.operator.blocks.ProjectionBlock;
-import org.apache.pinot.core.query.selection.SelectionOperatorService;
+import org.apache.pinot.core.operator.blocks.TransformBlock;
+import org.apache.pinot.core.operator.transform.TransformOperator;
+import org.apache.pinot.core.operator.transform.TransformResultMetadata;
+import org.apache.pinot.core.query.selection.SelectionOperatorUtils;
 
 
-/**
- * This MSelectionOperator will take care of applying a selection query to one IndexSegment.
- * nextBlock() will return an IntermediateResultBlock for the given IndexSegment.
- *
- *
- */
 public class SelectionOrderByOperator extends BaseOperator<IntermediateResultsBlock> {
   private static final String OPERATOR_NAME = "SelectionOrderByOperator";
 
   private final IndexSegment _indexSegment;
-  private final ProjectionOperator _projectionOperator;
-  private final Selection _selection;
-  private final SelectionOperatorService _selectionOperatorService;
+  private final TransformOperator _transformOperator;
+  private final List<SelectionSort> _sortSequence;
+  private final List<TransformExpressionTree> _expressions;
+  private final TransformResultMetadata[] _expressionMetadata;
   private final DataSchema _dataSchema;
-  private final Block[] _blocks;
-  private final Set<String> _selectionColumns = new HashSet<>();
+  private final int _numRowsToKeep;
+  private final PriorityQueue<Serializable[]> _rows;
+
   private ExecutionStatistics _executionStatistics;
 
-  public SelectionOrderByOperator(IndexSegment indexSegment, Selection selection,
-      ProjectionOperator projectionOperator) {
+  public SelectionOrderByOperator(IndexSegment indexSegment, Selection selection, TransformOperator transformOperator) {
     _indexSegment = indexSegment;
-    _selection = selection;
-    _projectionOperator = projectionOperator;
+    _transformOperator = transformOperator;
+    _sortSequence = selection.getSelectionSortSequence();
+    _expressions =
+        SelectionOperatorUtils.extractExpressions(selection.getSelectionColumns(), indexSegment, _sortSequence);
 
-    initColumnarDataSourcePlanNodeMap(indexSegment);
-    _selectionOperatorService = new SelectionOperatorService(_selection, indexSegment);
-    _dataSchema = _selectionOperatorService.getDataSchema();
-    _blocks = new Block[_selectionColumns.size()];
+    int numExpressions = _expressions.size();
+    _expressionMetadata = new TransformResultMetadata[numExpressions];
+    String[] columnNames = new String[numExpressions];
+    DataSchema.ColumnDataType[] columnDataTypes = new DataSchema.ColumnDataType[numExpressions];
+    for (int i = 0; i < numExpressions; i++) {
+      TransformExpressionTree expression = _expressions.get(i);
+      TransformResultMetadata expressionMetadata = _transformOperator.getResultMetadata(expression);
+      _expressionMetadata[i] = expressionMetadata;
+      columnNames[i] = expression.toString();
+      columnDataTypes[i] =
+          DataSchema.ColumnDataType.fromDataType(expressionMetadata.getDataType(), expressionMetadata.isSingleValue());
+    }
+    _dataSchema = new DataSchema(columnNames, columnDataTypes);
+
+    _numRowsToKeep = selection.getOffset() + selection.getSize();
+    _rows = new PriorityQueue<>(Math.min(_numRowsToKeep, SelectionOperatorUtils.MAX_ROW_HOLDER_INITIAL_CAPACITY),
+        getComparator());
   }
 
-  private void initColumnarDataSourcePlanNodeMap(IndexSegment indexSegment) {
-    _selectionColumns.addAll(_selection.getSelectionColumns());
-    if ((_selectionColumns.size() == 1) && ((_selectionColumns.toArray(new String[0]))[0].equals("*"))) {
-      _selectionColumns.clear();
-      for (String columnName : indexSegment.getPhysicalColumnNames()) {
-        _selectionColumns.add(columnName);
+  private Comparator<Serializable[]> getComparator() {
+    // Compare all single-value columns
+    int numOrderByExpressions = _sortSequence.size();
+    List<Integer> valueIndexList = new ArrayList<>(numOrderByExpressions);
+    for (int i = 0; i < numOrderByExpressions; i++) {
+      if (_expressionMetadata[i].isSingleValue()) {
+        valueIndexList.add(i);
       }
     }
-    if (_selection.getSelectionSortSequence() != null) {
-      for (SelectionSort selectionSort : _selection.getSelectionSortSequence()) {
-        _selectionColumns.add(selectionSort.getColumn());
+
+    int numValuesToCompare = valueIndexList.size();
+    int[] valueIndices = new int[numValuesToCompare];
+    Comparator[] valueComparators = new Comparator[numValuesToCompare];
+    for (int i = 0; i < numValuesToCompare; i++) {
+      int valueIndex = valueIndexList.get(i);
+      valueIndices[i] = valueIndex;
+      switch (_expressionMetadata[valueIndex].getDataType()) {
+        case INT:
+          valueComparators[i] = (Comparator<Integer>) Integer::compare;
+          break;
+        case LONG:
+          valueComparators[i] = (Comparator<Long>) Long::compare;
+          break;
+        case FLOAT:
+          valueComparators[i] = (Comparator<Float>) Float::compare;
+          break;
+        case DOUBLE:
+          valueComparators[i] = (Comparator<Double>) Double::compare;
+          break;
+        case STRING:
+          valueComparators[i] = Comparator.naturalOrder();
+          break;
+        case BYTES:
+          valueComparators[i] = (Comparator<byte[]>) ByteArray::compare;
+          break;
+        default:
+          throw new IllegalStateException();
+      }
+      if (_sortSequence.get(valueIndex).isIsAsc()) {
+        valueComparators[i] = valueComparators[i].reversed();
       }
     }
+
+    return new SelectionOperatorUtils.RowComparator(valueIndices, valueComparators);
   }
 
   @Override
   protected IntermediateResultsBlock getNextBlock() {
     int numDocsScanned = 0;
 
-    ProjectionBlock projectionBlock;
-    while ((projectionBlock = _projectionOperator.nextBlock()) != null) {
-      for (int i = 0; i < _dataSchema.size(); i++) {
-        _blocks[i] = projectionBlock.getBlock(_dataSchema.getColumnName(i));
+    TransformBlock transformBlock;
+    while ((transformBlock = _transformOperator.nextBlock()) != null) {
+      int numExpressions = _expressions.size();
+      BlockValSet[] blockValSets = new BlockValSet[numExpressions];
+      for (int i = 0; i < numExpressions; i++) {
+        TransformExpressionTree expression = _expressions.get(i);
+        blockValSets[i] = transformBlock.getBlockValueSet(expression);
       }
-      DocIdSetBlock docIdSetBlock = projectionBlock.getDocIdSetBlock();
-      _selectionOperatorService.iterateOnBlocksWithOrdering(docIdSetBlock.getBlockDocIdSet().iterator(), _blocks);
+      RowBasedBlockValueFetcher blockValueFetcher = new RowBasedBlockValueFetcher(blockValSets);
+
+      int numDocsFetched = transformBlock.getNumDocs();
+      numDocsScanned += numDocsFetched;
+      for (int i = 0; i < numDocsFetched; i++) {
+        SelectionOperatorUtils.addToPriorityQueue(blockValueFetcher.getRow(i), _rows, _numRowsToKeep);
+      }
     }
 
     // Create execution statistics.
-    numDocsScanned += _selectionOperatorService.getNumDocsScanned();
-    long numEntriesScannedInFilter = _projectionOperator.getExecutionStatistics().getNumEntriesScannedInFilter();
-    long numEntriesScannedPostFilter = numDocsScanned * _projectionOperator.getNumColumnsProjected();
+    long numEntriesScannedInFilter = _transformOperator.getExecutionStatistics().getNumEntriesScannedInFilter();
+    long numEntriesScannedPostFilter = numDocsScanned * _transformOperator.getNumColumnsProjected();
     long numTotalRawDocs = _indexSegment.getSegmentMetadata().getTotalRawDocs();
     _executionStatistics =
         new ExecutionStatistics(numDocsScanned, numEntriesScannedInFilter, numEntriesScannedPostFilter,
             numTotalRawDocs);
 
-    return new IntermediateResultsBlock(_selectionOperatorService.getDataSchema(), _selectionOperatorService.getRows());
+    return new IntermediateResultsBlock(_dataSchema, _rows);
   }
 
   @Override

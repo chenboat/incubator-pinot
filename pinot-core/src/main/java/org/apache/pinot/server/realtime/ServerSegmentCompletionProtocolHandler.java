@@ -23,36 +23,37 @@ import java.net.URI;
 import java.util.Map;
 import javax.net.ssl.SSLContext;
 import org.apache.commons.configuration.Configuration;
+import org.apache.pinot.common.config.TableNameBuilder;
 import org.apache.pinot.common.metrics.ServerMeter;
 import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.protocols.SegmentCompletionProtocol;
 import org.apache.pinot.common.utils.ClientSSLContextGenerator;
 import org.apache.pinot.common.utils.CommonConstants;
 import org.apache.pinot.common.utils.FileUploadDownloadClient;
-import org.apache.pinot.core.query.utils.Pair;
+import org.apache.pinot.pql.parsers.utils.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.pinot.common.utils.CommonConstants.Server.SegmentCompletionProtocol.*;
 
 
 /**
  * A class that handles sending segment completion protocol requests to the controller and getting
  * back responses
  */
+// TODO: Use exception based code to handle different types of exceptions.
 public class ServerSegmentCompletionProtocolHandler {
   private static Logger LOGGER = LoggerFactory.getLogger(ServerSegmentCompletionProtocolHandler.class);
-  private static final int SEGMENT_UPLOAD_REQUEST_TIMEOUT_MS = 30_000;
-  private static final int OTHER_REQUESTS_TIMEOUT = 10_000;
   private static final String HTTPS_PROTOCOL = "https";
   private static final String HTTP_PROTOCOL = "http";
 
-  private static final String CONFIG_OF_CONTROLLER_HTTPS_ENABLED = "enabled";
-  private static final String CONFIG_OF_CONTROLLER_HTTPS_PORT = "controller.port";
-
   private static SSLContext _sslContext;
   private static Integer _controllerHttpsPort;
+  private static int _segmentUploadRequestTimeoutMs;
 
   private final FileUploadDownloadClient _fileUploadDownloadClient;
   private final ServerMetrics _serverMetrics;
+  private final String _rawTableName;
 
   public static void init(Configuration uploaderConfig) {
     Configuration httpsConfig = uploaderConfig.subset(HTTPS_PROTOCOL);
@@ -60,11 +61,14 @@ public class ServerSegmentCompletionProtocolHandler {
       _sslContext = new ClientSSLContextGenerator(httpsConfig.subset(CommonConstants.PREFIX_OF_SSL_SUBSET)).generate();
       _controllerHttpsPort = httpsConfig.getInt(CONFIG_OF_CONTROLLER_HTTPS_PORT);
     }
+    _segmentUploadRequestTimeoutMs =
+        uploaderConfig.getInt(CONFIG_OF_SEGMENT_UPLOAD_REQUEST_TIMEOUT_MS, DEFAULT_SEGMENT_UPLOAD_REQUEST_TIMEOUT_MS);
   }
 
-  public ServerSegmentCompletionProtocolHandler(ServerMetrics serverMetrics) {
+  public ServerSegmentCompletionProtocolHandler(ServerMetrics serverMetrics, String tableNameWithType) {
     _fileUploadDownloadClient = new FileUploadDownloadClient(_sslContext);
     _serverMetrics = serverMetrics;
+    _rawTableName = TableNameBuilder.extractRawTableName(tableNameWithType);
   }
 
   public SegmentCompletionProtocol.Response segmentCommitStart(SegmentCompletionProtocol.Request.Params params) {
@@ -159,7 +163,7 @@ public class ServerSegmentCompletionProtocolHandler {
 
   private String createSegmentCompletionUrl(SegmentCompletionProtocol.Request request) {
     ControllerLeaderLocator leaderLocator = ControllerLeaderLocator.getInstance();
-    final Pair<String, Integer> leaderHostPort = leaderLocator.getControllerLeader();
+    final Pair<String, Integer> leaderHostPort = leaderLocator.getControllerLeader(_rawTableName);
     if (leaderHostPort == null) {
       LOGGER.warn("No leader found while trying to send {}", request.toString());
       return null;
@@ -177,7 +181,7 @@ public class ServerSegmentCompletionProtocolHandler {
     SegmentCompletionProtocol.Response response;
     try {
       String responseStr =
-          _fileUploadDownloadClient.sendSegmentCompletionProtocolRequest(new URI(url), OTHER_REQUESTS_TIMEOUT)
+          _fileUploadDownloadClient.sendSegmentCompletionProtocolRequest(new URI(url), DEFAULT_OTHER_REQUESTS_TIMEOUT)
               .getResponse();
       response = SegmentCompletionProtocol.Response.fromJsonString(responseStr);
       LOGGER.info("Controller response {} for {}", response.toJsonString(), url);
@@ -201,7 +205,7 @@ public class ServerSegmentCompletionProtocolHandler {
     SegmentCompletionProtocol.Response response;
     try {
       String responseStr = _fileUploadDownloadClient
-          .uploadSegmentMetadataFiles(new URI(url), metadataFiles, SEGMENT_UPLOAD_REQUEST_TIMEOUT_MS).getResponse();
+          .uploadSegmentMetadataFiles(new URI(url), metadataFiles, _segmentUploadRequestTimeoutMs).getResponse();
       response = SegmentCompletionProtocol.Response.fromJsonString(responseStr);
       LOGGER.info("Controller response {} for {}", response.toJsonString(), url);
       if (response.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.NOT_LEADER)) {
@@ -224,7 +228,7 @@ public class ServerSegmentCompletionProtocolHandler {
     SegmentCompletionProtocol.Response response;
     try {
       String responseStr = _fileUploadDownloadClient
-          .uploadSegment(new URI(url), segmentName, segmentTarFile, null, null, SEGMENT_UPLOAD_REQUEST_TIMEOUT_MS)
+          .uploadSegment(new URI(url), segmentName, segmentTarFile, null, null, _segmentUploadRequestTimeoutMs)
           .getResponse();
       response = SegmentCompletionProtocol.Response.fromJsonString(responseStr);
       LOGGER.info("Controller response {} for {}", response.toJsonString(), url);

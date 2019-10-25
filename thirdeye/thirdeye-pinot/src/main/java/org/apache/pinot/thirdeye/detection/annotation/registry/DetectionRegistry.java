@@ -23,16 +23,15 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import org.apache.pinot.thirdeye.detection.annotation.Components;
 import org.apache.pinot.thirdeye.detection.annotation.Tune;
-import org.apache.pinot.thirdeye.detection.annotation.Yaml;
 import org.apache.pinot.thirdeye.detection.spi.components.BaseComponent;
-import org.apache.pinot.thirdeye.detection.yaml.YamlDetectionConfigTranslator;
+import org.apache.pinot.thirdeye.detection.spi.components.BaselineProvider;
 import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.apache.commons.collections.MapUtils;
+import org.apache.commons.collections4.MapUtils;
 import org.reflections.Reflections;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,6 +50,7 @@ public class DetectionRegistry {
   private static final Logger LOG = LoggerFactory.getLogger(DetectionRegistry.class);
   private static final String KEY_CLASS_NAME = "className";
   private static final String KEY_ANNOTATION = "annotation";
+  private static final String KEY_IS_BASELINE_PROVIDER = "isBaselineProvider";
 
   private static DetectionRegistry INSTANCE;
 
@@ -74,29 +74,29 @@ public class DetectionRegistry {
       Reflections reflections = new Reflections();
       // register components
       Set<Class<? extends BaseComponent>> classes = reflections.getSubTypesOf(BaseComponent.class);
-      for (Class clazz : classes) {
+      for (Class<? extends BaseComponent> clazz : classes) {
         String className = clazz.getName();
         for (Annotation annotation : clazz.getAnnotations()) {
           if (annotation instanceof Components) {
             Components componentsAnnotation = (Components) annotation;
             REGISTRY_MAP.put(componentsAnnotation.type(),
-                ImmutableMap.of(KEY_CLASS_NAME, className, KEY_ANNOTATION, componentsAnnotation));
+                ImmutableMap.of(KEY_CLASS_NAME, className, KEY_ANNOTATION, componentsAnnotation,
+                    KEY_IS_BASELINE_PROVIDER, isBaselineProvider(clazz)));
+            LOG.info("Registered component {} - {}", componentsAnnotation.type(), className);
           }
           if (annotation instanceof Tune) {
-            Tune trainingAnnotation = (Tune) annotation;
-            TUNE_MAP.put(className, trainingAnnotation);
+            Tune tunableAnnotation = (Tune) annotation;
+            TUNE_MAP.put(className, tunableAnnotation);
+            LOG.info("Registered tuner {}", className);
           }
         }
       }
-      // register yaml translators
-      Set<Class<? extends YamlDetectionConfigTranslator>> yamlConverterClasses =
-          reflections.getSubTypesOf(YamlDetectionConfigTranslator.class);
-      for (Class clazz : yamlConverterClasses) {
-        for (Annotation annotation : clazz.getAnnotations()) {
-          if (annotation instanceof Yaml) {
-            YAML_MAP.put(((Yaml) annotation).pipelineType(), clazz.getName());
-          }
-        }
+      // todo: get rid of MIGRATED_ALGORITHM and MIGRATED_ALGORITHM_FILTER after the migration is completed
+      if (REGISTRY_MAP.containsKey("ALGORITHM")) {
+        REGISTRY_MAP.put("MIGRATED_ALGORITHM", REGISTRY_MAP.get("ALGORITHM"));
+      }
+      if (REGISTRY_MAP.containsKey("ALGORITHM_FILTER")) {
+        REGISTRY_MAP.put("MIGRATED_ALGORITHM_FILTER", REGISTRY_MAP.get("ALGORITHM_FILTER"));
       }
     } catch (Exception e) {
       LOG.warn("initialize detection registry error", e);
@@ -104,11 +104,40 @@ public class DetectionRegistry {
   }
 
   public static void registerComponent(String className, String type) {
-    REGISTRY_MAP.put(type, ImmutableMap.of(KEY_CLASS_NAME, className));
+    try {
+      Class<? extends BaseComponent> clazz = (Class<? extends BaseComponent>) Class.forName(className);
+      REGISTRY_MAP.put(type, ImmutableMap.of(KEY_CLASS_NAME, className, KEY_IS_BASELINE_PROVIDER, isBaselineProvider(clazz)));
+      LOG.info("Registered component {} {}", type, className);
+    } catch (Exception e) {
+      LOG.warn("Encountered exception when registering component {}", className, e);
+    }
+  }
+
+  public static void registerTunableComponent(String className, String tunable, String type) {
+    try {
+      Class<? extends BaseComponent> clazz = (Class<? extends BaseComponent>) Class.forName(className);
+      REGISTRY_MAP.put(type, ImmutableMap.of(KEY_CLASS_NAME, className, KEY_IS_BASELINE_PROVIDER, isBaselineProvider(clazz)));
+      Tune tune = new Tune(){
+        @Override
+        public String tunable() {
+          return tunable;
+        }
+
+        @Override
+        public Class<? extends Annotation> annotationType() {
+          return Tune.class;
+        }
+      };
+      TUNE_MAP.put(className, tune);
+      LOG.info("Registered tunable component {} {}", type, className);
+    } catch (Exception e) {
+      LOG.warn("Encountered exception when registering component {}", className, e);
+    }
   }
 
   public static void registerYamlConvertor(String className, String type) {
     YAML_MAP.put(type, className);
+    LOG.info("Registered yaml convertor {} {}", type, className);
   }
 
   /**
@@ -125,9 +154,9 @@ public class DetectionRegistry {
    * Look up the tunable class name for a component class name
    * @return tunable class name
    */
-  public String lookupTunable(String className) {
-    Preconditions.checkArgument(TUNE_MAP.containsKey(className), className + " not found in registry");
-    return this.lookup(TUNE_MAP.get(className).tunable());
+  public String lookupTunable(String type) {
+    Preconditions.checkArgument(TUNE_MAP.containsKey(type), type + " not found in registry");
+    return this.lookup(TUNE_MAP.get(type).tunable());
   }
 
   /**
@@ -141,6 +170,11 @@ public class DetectionRegistry {
 
   public boolean isTunable(String className) {
     return TUNE_MAP.containsKey(className);
+  }
+
+  public boolean isBaselineProvider(String type) {
+    Preconditions.checkArgument(REGISTRY_MAP.containsKey(type), type + " not found in registry");
+    return MapUtils.getBooleanValue(REGISTRY_MAP.get(type), KEY_IS_BASELINE_PROVIDER);
   }
 
   /**
@@ -160,5 +194,9 @@ public class DetectionRegistry {
 
   public String printAnnotations() {
     return String.join(", ", YAML_MAP.keySet());
+  }
+
+  private static boolean isBaselineProvider(Class<? extends BaseComponent> clazz) {
+    return BaselineProvider.class.isAssignableFrom(clazz);
   }
 }

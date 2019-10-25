@@ -51,9 +51,9 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.collections.MapUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.collections4.MapUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.pql.parsers.utils.Pair;
 import org.apache.pinot.thirdeye.anomaly.alert.util.AlertFilterHelper;
 import org.apache.pinot.thirdeye.anomaly.classification.ClassificationTaskRunner;
@@ -82,6 +82,7 @@ import org.apache.pinot.thirdeye.dataframe.util.MetricSlice;
 import org.apache.pinot.thirdeye.datalayer.bao.AnomalyFunctionManager;
 import org.apache.pinot.thirdeye.datalayer.bao.DatasetConfigManager;
 import org.apache.pinot.thirdeye.datalayer.bao.DetectionConfigManager;
+import org.apache.pinot.thirdeye.datalayer.bao.EvaluationManager;
 import org.apache.pinot.thirdeye.datalayer.bao.EventManager;
 import org.apache.pinot.thirdeye.datalayer.bao.GroupedAnomalyResultsManager;
 import org.apache.pinot.thirdeye.datalayer.bao.MergedAnomalyResultManager;
@@ -94,6 +95,7 @@ import org.apache.pinot.thirdeye.datalayer.dto.GroupedAnomalyResultsDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
 import org.apache.pinot.thirdeye.datalayer.dto.MetricConfigDTO;
 import org.apache.pinot.thirdeye.datalayer.pojo.AlertConfigBean;
+import org.apache.pinot.thirdeye.datalayer.pojo.MergedAnomalyResultBean;
 import org.apache.pinot.thirdeye.datasource.DAORegistry;
 import org.apache.pinot.thirdeye.datasource.ThirdEyeCacheRegistry;
 import org.apache.pinot.thirdeye.datasource.cache.QueryCache;
@@ -155,6 +157,7 @@ public class AnomaliesResource {
   private final DetectionConfigManager detectionDAO;
   private final EventManager eventDAO;
   private final MergedAnomalyResultManager anomalyDAO;
+  private final EvaluationManager evaluationDAO;
 
   private final ExecutorService threadPool;
   private final AlertFilterFactory alertFilterFactory;
@@ -177,6 +180,7 @@ public class AnomaliesResource {
     this.anomalyFunctionFactory = anomalyFunctionFactory;
     this.eventDAO = DAORegistry.getInstance().getEventDAO();
     this.anomalyDAO = DAORegistry.getInstance().getMergedAnomalyResultDAO();
+    this.evaluationDAO = DAO_REGISTRY.getEvaluationManager();
 
     QueryCache queryCache = ThirdEyeCacheRegistry.getInstance().getQueryCache();
     LoadingCache<String, Long> maxTimeCache = ThirdEyeCacheRegistry.getInstance().getDatasetMaxDataTimeCache();
@@ -185,7 +189,8 @@ public class AnomaliesResource {
     this.aggregationLoader = new DefaultAggregationLoader(this.metricConfigDAO, this.datasetConfigDAO, queryCache, maxTimeCache);
     this.loader = new DetectionPipelineLoader();
 
-    this.provider = new DefaultDataProvider(this.metricConfigDAO, this.datasetConfigDAO, this.eventDAO, this.anomalyDAO, this.timeSeriesLoader, this.aggregationLoader, this.loader);
+    this.provider = new DefaultDataProvider(this.metricConfigDAO, this.datasetConfigDAO, this.eventDAO, this.anomalyDAO, this.evaluationDAO,
+        this.timeSeriesLoader, this.aggregationLoader, this.loader);
   }
 
   @GET
@@ -299,7 +304,7 @@ public class AnomaliesResource {
 
     List<MergedAnomalyResultDTO> mergedAnomalies = mergedAnomalyResultDAO.findByTime(startTime, endTime);
     AnomaliesWrapper anomaliesWrapper =
-        constructAnomaliesWrapperFromMergedAnomalies(mergedAnomalies, searchFiltersJSON, pageNumber, filterOnly);
+        constructAnomaliesWrapperFromMergedAnomalies(removeChildren(mergedAnomalies), searchFiltersJSON, pageNumber, filterOnly);
     return anomaliesWrapper;
   }
 
@@ -308,7 +313,6 @@ public class AnomaliesResource {
    * @param startTime
    * @param endTime
    * @param anomalyIdsString
-   * @param functionName
    * @return
    * @throws Exception
    */
@@ -319,7 +323,6 @@ public class AnomaliesResource {
       @PathParam("endTime") Long endTime,
       @PathParam("pageNumber") int pageNumber,
       @QueryParam("anomalyIds") String anomalyIdsString,
-      @QueryParam("functionName") String functionName,
       @QueryParam("searchFilters") String searchFiltersJSON,
       @QueryParam("filterOnly") @DefaultValue("false") boolean filterOnly) throws Exception {
 
@@ -365,7 +368,7 @@ public class AnomaliesResource {
     }
     List<MergedAnomalyResultDTO> mergedAnomalies = getAnomaliesForMetricIdsInRange(metricIds, startTime, endTime);
     AnomaliesWrapper
-        anomaliesWrapper = constructAnomaliesWrapperFromMergedAnomalies(mergedAnomalies, searchFiltersJSON, pageNumber, filterOnly);
+        anomaliesWrapper = constructAnomaliesWrapperFromMergedAnomalies(removeChildren(mergedAnomalies), searchFiltersJSON, pageNumber, filterOnly);
     return anomaliesWrapper;
   }
 
@@ -415,7 +418,7 @@ public class AnomaliesResource {
     }
 
     AnomaliesWrapper
-        anomaliesWrapper = constructAnomaliesWrapperFromMergedAnomalies(mergedAnomalies, searchFiltersJSON, pageNumber, filterOnly);
+        anomaliesWrapper = constructAnomaliesWrapperFromMergedAnomalies(removeChildren(mergedAnomalies), searchFiltersJSON, pageNumber, filterOnly);
     return anomaliesWrapper;
   }
 
@@ -676,6 +679,13 @@ public class AnomaliesResource {
     return endDateTime.minus(periodToSubtract).getMillis();
   }
 
+  /**
+   * Removes child anomalies
+   */
+  private List<MergedAnomalyResultDTO> removeChildren(List<MergedAnomalyResultDTO> mergedAnomalies) {
+    mergedAnomalies.removeIf(MergedAnomalyResultBean::isChild);
+    return mergedAnomalies;
+  }
 
   /**
    * Constructs AnomaliesWrapper object from a list of merged anomalies
@@ -684,14 +694,6 @@ public class AnomaliesResource {
       String searchFiltersJSON, int pageNumber, boolean filterOnly) throws ExecutionException {
 
     AnomaliesWrapper anomaliesWrapper = new AnomaliesWrapper();
-
-    // remove child anomalies
-    Iterator<MergedAnomalyResultDTO> itAnomaly = mergedAnomalies.iterator();
-    while (itAnomaly.hasNext()) {
-      if (itAnomaly.next().isChild()) {
-        itAnomaly.remove();
-      }
-    }
 
     //filter the anomalies
     SearchFilters searchFilters = new SearchFilters();
@@ -1130,10 +1132,17 @@ public class AnomaliesResource {
         .withStart(new DateTime(sliceAnomalyCurrent.getStart(), dataTimeZone).minus(offsets.getPreOffsetPeriod()).getMillis())
         .withEnd(new DateTime(sliceAnomalyCurrent.getEnd(), dataTimeZone).plus(offsets.getPostOffsetPeriod()).getMillis());
 
-    DataFrame dfCurrent = this.timeSeriesLoader.load(sliceViewCurrent);
     DataFrame dfBaseline = DetectionUtils.getBaselineTimeseries(anomaly, filters, metric.getId(), config, sliceViewCurrent.getStart(), sliceViewCurrent.getEnd(), this.loader, this.provider).getDataFrame();
-    DataFrame dfAligned = dfCurrent.renameSeries(COL_VALUE, COL_CURRENT).joinOuter(
-        dfBaseline.renameSeries(COL_VALUE, COL_BASELINE));
+    DataFrame dfAligned;
+    if (dfBaseline.contains(COL_CURRENT)) {
+      // if baseline provider returns both current values and baseline values, using them as the result
+      dfAligned = dfBaseline;
+      dfAligned.renameSeries(COL_VALUE, COL_BASELINE);
+    } else {
+      // otherwise fetch current values and join the time series to generate the result
+      DataFrame dfCurrent = this.timeSeriesLoader.load(sliceViewCurrent);
+      dfAligned = dfCurrent.renameSeries(COL_VALUE, COL_CURRENT).joinOuter(dfBaseline.renameSeries(COL_VALUE, COL_BASELINE));
+    }
 
     details.setDates(makeStringDates(dfAligned.getLongs(COL_TIME)));
     details.setCurrentValues(makeStringValues(dfAligned.getDoubles(COL_CURRENT)));

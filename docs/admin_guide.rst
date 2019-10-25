@@ -26,8 +26,9 @@ Admin Guide
 .. toctree::
    :maxdepth: 1
 
+   tableconfig_schema
+   schema
    in_production
-   management_api
    pinot_hadoop
    customizations
    tuning_pinot

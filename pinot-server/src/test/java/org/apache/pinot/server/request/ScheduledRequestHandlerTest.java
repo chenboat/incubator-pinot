@@ -18,17 +18,14 @@
  */
 package org.apache.pinot.server.request;
 
-import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.yammer.metrics.core.MetricsRegistry;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelHandlerContext;
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.util.Arrays;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -53,14 +50,11 @@ import org.apache.pinot.core.query.scheduler.resources.UnboundedResourceManager;
 import org.apache.pinot.pql.parsers.Pql2Compiler;
 import org.apache.pinot.serde.SerDe;
 import org.apache.thrift.protocol.TCompactProtocol;
-import org.mockito.stubbing.Answer;
 import org.testng.Assert;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 
 public class ScheduledRequestHandlerTest {
@@ -69,7 +63,6 @@ public class ScheduledRequestHandlerTest {
   private static final Configuration DEFAULT_SCHEDULER_CONFIG = new PropertiesConfiguration();
 
   private ServerMetrics serverMetrics;
-  private ChannelHandlerContext channelHandlerContext;
   private QueryScheduler queryScheduler;
   private QueryExecutor queryExecutor;
   private UnboundedResourceManager resourceManager;
@@ -78,10 +71,6 @@ public class ScheduledRequestHandlerTest {
   @BeforeClass
   public void setUp() {
     serverMetrics = new ServerMetrics(new MetricsRegistry());
-    channelHandlerContext = mock(ChannelHandlerContext.class, RETURNS_DEEP_STUBS);
-    when(channelHandlerContext.channel().remoteAddress())
-        .thenAnswer((Answer<InetSocketAddress>) invocationOnMock -> new InetSocketAddress("localhost", 60000));
-
     queryScheduler = mock(QueryScheduler.class);
     queryExecutor = new ServerQueryExecutorV1Impl();
     latestQueryTime = new LongAccumulator(Long::max, 0);
@@ -92,10 +81,8 @@ public class ScheduledRequestHandlerTest {
   public void testBadRequest()
       throws Exception {
     ScheduledRequestHandler handler = new ScheduledRequestHandler(queryScheduler, serverMetrics);
-    String requestBadString = "foobar";
-    byte[] requestData = requestBadString.getBytes();
-    ByteBuf buffer = Unpooled.wrappedBuffer(requestData);
-    ListenableFuture<byte[]> response = handler.processRequest(channelHandlerContext, buffer);
+    String badRequest = "foobar";
+    ListenableFuture<byte[]> response = handler.processRequest(badRequest.getBytes());
     // The handler method is expected to return immediately
     Assert.assertTrue(response.isDone());
     byte[] responseBytes = response.get();
@@ -112,10 +99,8 @@ public class ScheduledRequestHandlerTest {
     return request;
   }
 
-  private ByteBuf getSerializedInstanceRequest(InstanceRequest request) {
-    SerDe serDe = new SerDe(new TCompactProtocol.Factory());
-    byte[] requestData = serDe.serialize(request);
-    return Unpooled.wrappedBuffer(requestData);
+  private byte[] getSerializedInstanceRequest(InstanceRequest request) {
+    return new SerDe(new TCompactProtocol.Factory()).serialize(request);
   }
 
   @Test
@@ -126,14 +111,19 @@ public class ScheduledRequestHandlerTest {
           @Nonnull
           @Override
           public ListenableFuture<byte[]> submit(@Nonnull ServerQueryRequest queryRequest) {
-            ListenableFuture<DataTable> dataTable = resourceManager.getQueryRunners().submit(() -> {
-              throw new RuntimeException("query processing error");
+            // The default version of Java 1.8 cannot recognize whether the submit method comes from ListeningExecutorService or Runnable.
+            // Specifying it for less ambiguity.
+            ListenableFuture<DataTable> dataTable = resourceManager.getQueryRunners().submit(new Callable<DataTable>() {
+              @Override
+              public DataTable call() {
+                throw new RuntimeException("query processing error");
+              }
             });
             ListenableFuture<DataTable> queryResponse = Futures.catching(dataTable, Throwable.class, input -> {
               DataTable result = new DataTableImplV2();
               result.addException(QueryException.INTERNAL_ERROR);
               return result;
-            });
+            }, MoreExecutors.directExecutor());
             return serializeData(queryResponse);
           }
 
@@ -148,8 +138,8 @@ public class ScheduledRequestHandlerTest {
           }
         }, serverMetrics);
 
-    ByteBuf requestBuf = getSerializedInstanceRequest(getInstanceRequest());
-    ListenableFuture<byte[]> responseFuture = handler.processRequest(channelHandlerContext, requestBuf);
+    ListenableFuture<byte[]> responseFuture =
+        handler.processRequest(getSerializedInstanceRequest(getInstanceRequest()));
     byte[] bytes = responseFuture.get(2, TimeUnit.SECONDS);
     // we get DataTable with exception information in case of query processing exception
     Assert.assertTrue(bytes.length > 0);
@@ -196,8 +186,8 @@ public class ScheduledRequestHandlerTest {
           }
         }, serverMetrics);
 
-    ByteBuf requestBuf = getSerializedInstanceRequest(getInstanceRequest());
-    ListenableFuture<byte[]> responseFuture = handler.processRequest(channelHandlerContext, requestBuf);
+    ListenableFuture<byte[]> responseFuture =
+        handler.processRequest(getSerializedInstanceRequest(getInstanceRequest()));
     byte[] responseBytes = responseFuture.get(2, TimeUnit.SECONDS);
     DataTable responseDT = DataTableFactory.getDataTable(responseBytes);
     Assert.assertEquals(responseDT.getNumberOfRows(), 2);
@@ -208,13 +198,13 @@ public class ScheduledRequestHandlerTest {
   }
 
   private ListenableFuture<byte[]> serializeData(ListenableFuture<DataTable> dataTable) {
-    return Futures.transform(dataTable, (Function<DataTable, byte[]>) input -> {
+    return Futures.transform(dataTable, input -> {
       try {
         Preconditions.checkNotNull(input);
         return input.toBytes();
       } catch (IOException e) {
         return new byte[0];
       }
-    });
+    }, MoreExecutors.directExecutor());
   }
 }

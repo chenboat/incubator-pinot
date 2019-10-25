@@ -18,7 +18,6 @@
  */
 package org.apache.pinot.controller.helix.core;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
@@ -41,8 +40,7 @@ import org.apache.helix.store.zk.ZkHelixPropertyStore;
 import org.apache.pinot.common.config.TableNameBuilder;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
 import org.apache.pinot.common.utils.SegmentName;
-import org.apache.pinot.common.utils.StringUtil;
-import org.apache.pinot.controller.ControllerConf;
+import org.apache.pinot.common.utils.URIUtils;
 import org.apache.pinot.filesystem.PinotFS;
 import org.apache.pinot.filesystem.PinotFSFactory;
 import org.joda.time.DateTime;
@@ -100,9 +98,10 @@ public class SegmentDeletionManager {
 
   protected synchronized void deleteSegmentFromPropertyStoreAndLocal(String tableName, Collection<String> segmentIds,
       long deletionDelay) {
-    // Check if segment got removed from ExternalView and IdealStates
-    if (_helixAdmin.getResourceExternalView(_helixClusterName, tableName) == null
-        || _helixAdmin.getResourceIdealState(_helixClusterName, tableName) == null) {
+    // Check if segment got removed from ExternalView or IdealState
+    ExternalView externalView = _helixAdmin.getResourceExternalView(_helixClusterName, tableName);
+    IdealState idealState = _helixAdmin.getResourceIdealState(_helixClusterName, tableName);
+    if (externalView == null || idealState == null) {
       LOGGER.warn("Resource: {} is not set up in idealState or ExternalView, won't do anything", tableName);
       return;
     }
@@ -111,9 +110,6 @@ public class SegmentDeletionManager {
     Set<String> segmentsToRetryLater = new HashSet<>(segmentIds.size());  // List of segments that we need to retry
 
     try {
-      ExternalView externalView = _helixAdmin.getResourceExternalView(_helixClusterName, tableName);
-      IdealState idealState = _helixAdmin.getResourceIdealState(_helixClusterName, tableName);
-
       for (String segmentId : segmentIds) {
         Map<String, String> segmentToInstancesMapFromExternalView = externalView.getStateMap(segmentId);
         Map<String, String> segmentToInstancesMapFromIdealStates = idealState.getInstanceStateMap(segmentId);
@@ -174,16 +170,15 @@ public class SegmentDeletionManager {
   }
 
   protected void removeSegmentFromStore(String tableNameWithType, String segmentId) {
-    final String rawTableName = TableNameBuilder.extractRawTableName(tableNameWithType);
+    // Ignore HLC segments as they are not stored in Pinot FS
+    if (SegmentName.isHighLevelConsumerSegmentName(segmentId)) {
+      return;
+    }
     if (_dataDir != null) {
-      URI fileToMoveURI;
-      PinotFS pinotFS;
-      URI dataDirURI = ControllerConf.getUriFromPath(_dataDir);
-      fileToMoveURI = ControllerConf.constructSegmentLocation(_dataDir, rawTableName, segmentId);
-      URI deletedSegmentDestURI = ControllerConf
-          .constructSegmentLocation(StringUtil.join(File.separator, _dataDir, DELETED_SEGMENTS), rawTableName,
-              segmentId);
-      pinotFS = PinotFSFactory.create(dataDirURI.getScheme());
+      String rawTableName = TableNameBuilder.extractRawTableName(tableNameWithType);
+      URI fileToMoveURI = URIUtils.getUri(_dataDir, rawTableName, URIUtils.encode(segmentId));
+      URI deletedSegmentDestURI = URIUtils.getUri(_dataDir, DELETED_SEGMENTS, rawTableName, URIUtils.encode(segmentId));
+      PinotFS pinotFS = PinotFSFactory.create(fileToMoveURI.getScheme());
 
       try {
         if (pinotFS.exists(fileToMoveURI)) {
@@ -199,9 +194,7 @@ public class SegmentDeletionManager {
                 deletedSegmentDestURI.toString());
           }
         } else {
-          if (!SegmentName.isHighLevelConsumerSegmentName(segmentId)) {
-            LOGGER.warn("Not found local segment file for segment {}" + fileToMoveURI.toString());
-          }
+          LOGGER.warn("Failed to find local segment file for segment {}", fileToMoveURI.toString());
         }
       } catch (IOException e) {
         LOGGER.warn("Could not move segment {} from {} to {}", segmentId, fileToMoveURI.toString(),
@@ -218,9 +211,8 @@ public class SegmentDeletionManager {
    */
   public void removeAgedDeletedSegments(int retentionInDays) {
     if (_dataDir != null) {
-      URI dataDirURI = ControllerConf.getUriFromPath(_dataDir);
-      URI deletedDirURI = ControllerConf.getUriFromPath(StringUtil.join(File.separator, _dataDir, DELETED_SEGMENTS));
-      PinotFS pinotFS = PinotFSFactory.create(dataDirURI.getScheme());
+      URI deletedDirURI = URIUtils.getUri(_dataDir, DELETED_SEGMENTS);
+      PinotFS pinotFS = PinotFSFactory.create(deletedDirURI.getScheme());
 
       try {
         // Check that the directory for deleted segments exists.
@@ -236,12 +228,12 @@ public class SegmentDeletionManager {
         }
 
         for (String tableNameDir : tableNameDirs) {
-          URI tableNameURI = ControllerConf.getUriFromPath(tableNameDir);
+          URI tableNameURI = URIUtils.getUri(tableNameDir);
           // Get files that are aged
           final String[] targetFiles = pinotFS.listFiles(tableNameURI, false);
           int numFilesDeleted = 0;
           for (String targetFile : targetFiles) {
-            URI targetURI = ControllerConf.getUriFromPath(targetFile);
+            URI targetURI = URIUtils.getUri(targetFile);
             Date dateToDelete = DateTime.now().minusDays(retentionInDays).toDate();
             if (pinotFS.lastModified(targetURI) < dateToDelete.getTime()) {
               if (!pinotFS.delete(targetURI, true)) {

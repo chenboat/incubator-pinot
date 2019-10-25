@@ -18,9 +18,11 @@
  */
 package org.apache.pinot.broker.broker.helix;
 
+import com.google.common.base.Preconditions;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.helix.HelixConstants;
 import org.apache.helix.HelixDataAccessor;
 import org.apache.helix.HelixManager;
 import org.apache.helix.PropertyKey;
@@ -41,15 +43,17 @@ public class LiveInstanceChangeHandler implements ClusterChangeHandler {
 
   private static final boolean DO_NOT_RECREATE = false;
 
-  private final HelixDataAccessor _helixDataAccessor;
-  private final PropertyKey _liveInstancesKey;
+  private HelixDataAccessor _helixDataAccessor;
+  private PropertyKey _liveInstancesKey;
 
   private KeyedPool<PooledNettyClientResourceManager.PooledClientConnection> _connectionPool;
   private Map<String, String> _liveInstanceToSessionIdMap;
 
-  public LiveInstanceChangeHandler(HelixManager helixManager) {
+  @Override
+  public void init(HelixManager helixManager) {
+    Preconditions.checkState(_helixDataAccessor == null, "LiveInstanceChangeHandler is already initialized");
     _helixDataAccessor = helixManager.getHelixDataAccessor();
-    _liveInstancesKey = new PropertyKey.Builder(helixManager.getClusterName()).liveInstances();
+    _liveInstancesKey = _helixDataAccessor.keyBuilder().liveInstances();
   }
 
   public void init(KeyedPool<PooledNettyClientResourceManager.PooledClientConnection> connectionPool) {
@@ -58,7 +62,10 @@ public class LiveInstanceChangeHandler implements ClusterChangeHandler {
   }
 
   @Override
-  public void processClusterChange() {
+  public void processClusterChange(HelixConstants.ChangeType changeType) {
+    Preconditions
+        .checkState(changeType == HelixConstants.ChangeType.LIVE_INSTANCE, "Illegal change type: " + changeType);
+
     // Skip processing live instance change for single-connection routing
     if (_connectionPool == null) {
       return;
@@ -92,8 +99,7 @@ public class LiveInstanceChangeHandler implements ClusterChangeHandler {
           try {
             LOGGER.info("Instance {} has changed session id {} -> {}, validating connection pool for this instance.",
                 instanceId, sessionId, _liveInstanceToSessionIdMap.get(instanceId));
-            ServerInstance ins = ServerInstance.forHostPort(hostName, port);
-            _connectionPool.validatePool(ins, DO_NOT_RECREATE);
+            _connectionPool.validatePool(new ServerInstance(hostName, port), DO_NOT_RECREATE);
             _liveInstanceToSessionIdMap.put(instanceId, sessionId);
           } catch (Exception e) {
             LOGGER.error("Error trying to validate & destroy dead connections for {}", instanceId, e);
@@ -104,8 +110,7 @@ public class LiveInstanceChangeHandler implements ClusterChangeHandler {
         // we don't have this instanceId
         // lets first check if the connection is valid or not
         try {
-          ServerInstance ins = ServerInstance.forHostPort(hostName, port);
-          _connectionPool.validatePool(ins, DO_NOT_RECREATE);
+          _connectionPool.validatePool(new ServerInstance(hostName, port), DO_NOT_RECREATE);
           _liveInstanceToSessionIdMap.put(instanceId, sessionId);
         } catch (Exception e) {
           LOGGER.error("Error trying to destroy dead connections for {}", instanceId, e);

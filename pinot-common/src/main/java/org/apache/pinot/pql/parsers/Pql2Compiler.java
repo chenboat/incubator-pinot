@@ -39,7 +39,10 @@ import org.antlr.v4.runtime.tree.ParseTreeWalker;
 import org.apache.commons.lang.math.NumberUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.pinot.common.request.BrokerRequest;
+import org.apache.pinot.common.request.PinotQuery;
 import org.apache.pinot.common.request.transform.TransformExpressionTree;
+import org.apache.pinot.parsers.AbstractCompiler;
+import org.apache.pinot.parsers.utils.BrokerRequestComparisonUtils;
 import org.apache.pinot.pql.parsers.pql2.ast.AstNode;
 import org.apache.pinot.pql.parsers.pql2.ast.BaseAstNode;
 import org.apache.pinot.pql.parsers.pql2.ast.BetweenPredicateAstNode;
@@ -49,6 +52,8 @@ import org.apache.pinot.pql.parsers.pql2.ast.HavingAstNode;
 import org.apache.pinot.pql.parsers.pql2.ast.InPredicateAstNode;
 import org.apache.pinot.pql.parsers.pql2.ast.OutputColumnAstNode;
 import org.apache.pinot.pql.parsers.pql2.ast.RegexpLikePredicateAstNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /**
@@ -57,7 +62,19 @@ import org.apache.pinot.pql.parsers.pql2.ast.RegexpLikePredicateAstNode;
 @ThreadSafe
 public class Pql2Compiler implements AbstractCompiler {
 
+  private static final Logger LOGGER = LoggerFactory.getLogger(Pql2Compiler.class);
+
+  public static boolean ENABLE_PINOT_QUERY =
+      Boolean.valueOf(System.getProperty("pinot.query.converter.enabled", "false"));
+  public static boolean VALIDATE_CONVERTER =
+      Boolean.valueOf(System.getProperty("pinot.query.converter.validate", "false"));
+  public static boolean FAIL_ON_CONVERSION_ERROR =
+      Boolean.valueOf(System.getProperty("pinot.query.converter.fail_on_error", "false"));
+  public static String ENABLE_DISTINCT_KEY = "pinot.distinct.enabled";
+  public static boolean ENABLE_DISTINCT = Boolean.valueOf(System.getProperty(ENABLE_DISTINCT_KEY, "true"));
+
   private static class ErrorListener extends BaseErrorListener {
+
     @Override
     public void syntaxError(@Nonnull Recognizer<?, ?> recognizer, @Nullable Object offendingSymbol, int line,
         int charPositionInLine, @Nonnull String msg, @Nullable RecognitionException e) {
@@ -72,7 +89,6 @@ public class Pql2Compiler implements AbstractCompiler {
    *
    * @param expression Expression to compile
    * @return BrokerRequest
-   * @throws Pql2CompilationException
    */
   @Override
   public BrokerRequest compileToBrokerRequest(String expression)
@@ -103,6 +119,31 @@ public class Pql2Compiler implements AbstractCompiler {
 
       BrokerRequest brokerRequest = new BrokerRequest();
       rootNode.updateBrokerRequest(brokerRequest);
+      if (ENABLE_PINOT_QUERY) {
+        try {
+          PinotQuery pinotQuery = new PinotQuery();
+          rootNode.updatePinotQuery(pinotQuery);
+          if (VALIDATE_CONVERTER) {
+            PinotQuery2BrokerRequestConverter converter = new PinotQuery2BrokerRequestConverter();
+            BrokerRequest tempBrokerRequest = converter.convert(pinotQuery);
+            boolean result = BrokerRequestComparisonUtils.validate(brokerRequest, tempBrokerRequest);
+            if (!result) {
+              LOGGER.error("Pinot query to broker request conversion failed. PQL:{}", expression);
+              if (FAIL_ON_CONVERSION_ERROR) {
+                throw new Pql2CompilationException(
+                    "Pinot query to broker request conversion failed. PQL:" + expression);
+              }
+            }
+          }
+          brokerRequest.setPinotQuery(pinotQuery);
+        } catch (Exception e) {
+          //non fatal for now.
+          LOGGER.error("Non fatal: Failed to populate pinot query and broker request. PQL:{}", expression, e);
+          if (FAIL_ON_CONVERSION_ERROR) {
+            throw e;
+          }
+        }
+      }
       return brokerRequest;
     } catch (Pql2CompilationException e) {
       throw e;
@@ -111,7 +152,6 @@ public class Pql2Compiler implements AbstractCompiler {
     }
   }
 
-  @Override
   public TransformExpressionTree compileToExpressionTree(String expression) {
     CharStream charStream = new ANTLRInputStream(expression);
     PQL2Lexer lexer = new PQL2Lexer(charStream);

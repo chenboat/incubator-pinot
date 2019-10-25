@@ -37,7 +37,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import org.apache.commons.collections.MapUtils;
+import org.apache.commons.collections4.MapUtils;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.Period;
@@ -66,11 +66,7 @@ public abstract class DetectionPipeline {
     this.config = config;
     this.startTime = startTime;
     this.endTime = endTime;
-    try {
-      this.initComponents();
-    } catch (Exception e) {
-      throw new IllegalArgumentException("Initialize components failed. Please check rule parameters. " + e.getMessage());
-    }
+    this.initComponents();
   }
 
   /**
@@ -83,44 +79,52 @@ public abstract class DetectionPipeline {
 
   /**
    * Initialize all components in the pipeline
-   * @throws Exception
    */
-  private void initComponents() throws Exception {
+  private void initComponents() {
     InputDataFetcher dataFetcher = new DefaultInputDataFetcher(this.provider, this.config.getId());
     Map<String, BaseComponent> instancesMap = config.getComponents();
     Map<String, Object> componentSpecs = config.getComponentSpecs();
     if (componentSpecs != null) {
-      for (String componentName : componentSpecs.keySet()) {
-        Map<String, Object> componentSpec = MapUtils.getMap(componentSpecs, componentName);
-        if (!instancesMap.containsKey(componentName)){
-          instancesMap.put(componentName, createComponent(componentSpec));
+      for (String componentKey : componentSpecs.keySet()) {
+        Map<String, Object> componentSpec = ConfigUtils.getMap(componentSpecs.get(componentKey));
+        if (!instancesMap.containsKey(componentKey)){
+          instancesMap.put(componentKey, createComponent(componentSpec));
         }
       }
 
-      for (String componentName : componentSpecs.keySet()) {
-        Map<String, Object> componentSpec = MapUtils.getMap(componentSpecs, componentName);
+      for (String componentKey : componentSpecs.keySet()) {
+        Map<String, Object> componentSpec = ConfigUtils.getMap(componentSpecs.get(componentKey));
         for (Map.Entry<String, Object> entry : componentSpec.entrySet()){
-          if (DetectionUtils.isReferenceName(entry.getValue().toString())) {
-            String refComponentName = DetectionUtils.getComponentName(entry.getValue().toString());
-            componentSpec.put(entry.getKey(), instancesMap.get(refComponentName));
+          if (entry.getValue() != null && DetectionUtils.isReferenceName(entry.getValue().toString())) {
+            componentSpec.put(entry.getKey(), instancesMap.get(DetectionUtils.getComponentKey(entry.getValue().toString())));
           }
         }
-        instancesMap.get(componentName).init(getComponentSpec(componentSpec), dataFetcher);
+        // Initialize the components
+        instancesMap.get(componentKey).init(getComponentSpec(componentSpec), dataFetcher);
       }
     }
     config.setComponents(instancesMap);
   }
 
-  private BaseComponent createComponent(Map<String, Object> componentSpec)
-      throws Exception {
-    Class<BaseComponent> clazz = (Class<BaseComponent>) Class.forName(MapUtils.getString(componentSpec, PROP_CLASS_NAME));
-    return clazz.newInstance();
+  private BaseComponent createComponent(Map<String, Object> componentSpec) {
+    String className = MapUtils.getString(componentSpec, PROP_CLASS_NAME);
+    try {
+      Class<BaseComponent> clazz = (Class<BaseComponent>) Class.forName(className);
+      return clazz.newInstance();
+    } catch (Exception e) {
+      throw new IllegalArgumentException("Failed to create component for " + className, e.getCause());
+    }
   }
 
-  private AbstractSpec getComponentSpec(Map<String, Object> componentSpec) throws Exception {
-    Class clazz = Class.forName(MapUtils.getString(componentSpec, PROP_CLASS_NAME));
-    Class<AbstractSpec> specClazz = (Class<AbstractSpec>) Class.forName(getSpecClassName(clazz));
-    return AbstractSpec.fromProperties(componentSpec, specClazz);
+  private AbstractSpec getComponentSpec(Map<String, Object> componentSpec) {
+    String className = MapUtils.getString(componentSpec, PROP_CLASS_NAME);
+    try {
+      Class clazz = Class.forName(className);
+      Class<AbstractSpec> specClazz = (Class<AbstractSpec>) Class.forName(getSpecClassName(clazz));
+      return AbstractSpec.fromProperties(componentSpec, specClazz);
+    } catch (Exception e) {
+      throw new IllegalArgumentException("Failed to get component spec for " + className, e);
+    }
   }
 
   /**

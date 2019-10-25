@@ -18,20 +18,14 @@
  */
 package org.apache.pinot.core.data.partition;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import org.apache.kafka.common.utils.Utils;
+import org.apache.pinot.common.utils.HashUtil;
 import org.apache.pinot.common.utils.StringUtil;
 
 
 /**
- * Implementation of {@link PartitionFunction} that mimics Kafka's
- * {@link org.apache.kafka.clients.producer.internals.DefaultPartitioner}.
- *
- * **** ALERT ****
- * However, this is not general purpose. It assumes that the partition key
- * was a string as used by the Tracking Producer. This is only a reference
- * implementation and users should create their own for their specific partitioner.
- *
+ * Implementation of {@link PartitionFunction} which partitions based on 32 bit murmur hash
  */
 public class MurmurPartitionFunction implements PartitionFunction {
   private static final String NAME = "Murmur";
@@ -42,14 +36,14 @@ public class MurmurPartitionFunction implements PartitionFunction {
    * @param numPartitions Number of partitions.
    */
   public MurmurPartitionFunction(int numPartitions) {
-    Preconditions.checkArgument(numPartitions > 0, "Number of partitions must be > 0, specified", numPartitions);
+    Preconditions.checkArgument(numPartitions > 0, "Number of partitions must be > 0");
     _numPartitions = numPartitions;
   }
 
   @Override
   public int getPartition(Object valueIn) {
     String value = (valueIn instanceof String) ? (String) valueIn : valueIn.toString();
-    return (Utils.murmur2(StringUtil.encodeUtf8(value)) & 0x7fffffff) % _numPartitions;
+    return (murmur2(StringUtil.encodeUtf8(value)) & 0x7fffffff) % _numPartitions;
   }
 
   @Override
@@ -60,5 +54,17 @@ public class MurmurPartitionFunction implements PartitionFunction {
   @Override
   public String toString() {
     return NAME;
+  }
+
+  /**
+   * NOTE: This code has been copied over from org.apache.kafka.common.utils.Utils::murmur2
+   *
+   * Generates 32 bit murmur2 hash from byte array
+   * @param data byte array to hash
+   * @return 32 bit hash of the given array
+   */
+  @VisibleForTesting
+  int murmur2(final byte[] data) {
+    return HashUtil.murmur2(data);
   }
 }

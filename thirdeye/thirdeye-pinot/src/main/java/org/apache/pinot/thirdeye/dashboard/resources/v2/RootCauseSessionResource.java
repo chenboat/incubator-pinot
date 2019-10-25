@@ -26,9 +26,8 @@ import org.apache.pinot.thirdeye.datalayer.dto.RootcauseSessionDTO;
 import org.apache.pinot.thirdeye.datalayer.pojo.RootcauseSessionBean;
 import org.apache.pinot.thirdeye.datalayer.util.Predicate;
 import org.apache.pinot.thirdeye.rootcause.impl.AnomalyEventEntity;
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -239,6 +238,12 @@ public class RootCauseSessionResource {
 
     if (other.getPermissions() != null)
       session.setPermissions(other.getPermissions());
+
+    if (other.getIsUserCustomizingRequest() != null)
+      session.setIsUserCustomizingRequest(other.getIsUserCustomizingRequest());
+
+    if (other.getCustomTableSettings() != null)
+      session.setCustomTableSettings(other.getCustomTableSettings());
 
     return session;
   }

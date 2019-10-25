@@ -21,21 +21,23 @@ package org.apache.pinot.thirdeye.dashboard;
 
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.google.common.cache.CacheBuilder;
+import io.dropwizard.auth.AuthValueFactoryProvider;
+import io.dropwizard.auth.Authenticator;
 import org.apache.pinot.thirdeye.anomaly.detection.DetectionJobScheduler;
-import org.apache.pinot.thirdeye.anomaly.onboard.DetectionOnboardResource;
 import org.apache.pinot.thirdeye.anomalydetection.alertFilterAutotune.AlertFilterAutotuneFactory;
 import org.apache.pinot.thirdeye.api.application.ApplicationResource;
+import org.apache.pinot.thirdeye.auth.ThirdEyeCredentials;
 import org.apache.pinot.thirdeye.common.time.TimeGranularity;
-import org.apache.pinot.thirdeye.auth.Credentials;
 import org.apache.pinot.thirdeye.auth.ThirdEyeAuthFilter;
 import org.apache.pinot.thirdeye.auth.ThirdEyeAuthenticatorDisabled;
-import org.apache.pinot.thirdeye.auth.ThirdEyeAuthenticatorLdap;
+import org.apache.pinot.thirdeye.auth.ThirdEyeLdapAuthenticator;
 import org.apache.pinot.thirdeye.auth.ThirdEyePrincipal;
 import org.apache.pinot.thirdeye.common.BaseThirdEyeApplication;
 import org.apache.pinot.thirdeye.common.ThirdEyeSwaggerBundle;
 import org.apache.pinot.thirdeye.dashboard.configs.AuthConfiguration;
 import org.apache.pinot.thirdeye.dashboard.configs.ResourceConfiguration;
 import org.apache.pinot.thirdeye.dashboard.resources.AdminResource;
+import org.apache.pinot.thirdeye.dashboard.resources.AnomalyFlattenResource;
 import org.apache.pinot.thirdeye.dashboard.resources.AnomalyResource;
 import org.apache.pinot.thirdeye.dashboard.resources.AutoOnboardResource;
 import org.apache.pinot.thirdeye.dashboard.resources.CacheResource;
@@ -48,7 +50,6 @@ import org.apache.pinot.thirdeye.dashboard.resources.EntityManagerResource;
 import org.apache.pinot.thirdeye.dashboard.resources.EntityMappingResource;
 import org.apache.pinot.thirdeye.dashboard.resources.MetricConfigResource;
 import org.apache.pinot.thirdeye.dashboard.resources.OnboardDatasetMetricResource;
-import org.apache.pinot.thirdeye.dashboard.resources.OnboardResource;
 import org.apache.pinot.thirdeye.dashboard.resources.SummaryResource;
 import org.apache.pinot.thirdeye.dashboard.resources.ThirdEyeResource;
 import org.apache.pinot.thirdeye.dashboard.resources.v2.AnomaliesResource;
@@ -65,12 +66,13 @@ import org.apache.pinot.thirdeye.api.user.dashboard.UserDashboardResource;
 import org.apache.pinot.thirdeye.dashboard.resources.v2.rootcause.DefaultEntityFormatter;
 import org.apache.pinot.thirdeye.dashboard.resources.v2.rootcause.FormatterLoader;
 import org.apache.pinot.thirdeye.dataset.DatasetAutoOnboardResource;
+import org.apache.pinot.thirdeye.datasource.DAORegistry;
 import org.apache.pinot.thirdeye.datasource.ThirdEyeCacheRegistry;
 import org.apache.pinot.thirdeye.datasource.loader.AggregationLoader;
 import org.apache.pinot.thirdeye.datasource.loader.DefaultAggregationLoader;
 import org.apache.pinot.thirdeye.datasource.loader.DefaultTimeSeriesLoader;
 import org.apache.pinot.thirdeye.datasource.loader.TimeSeriesLoader;
-import org.apache.pinot.thirdeye.detection.DetectionMigrationResource;
+import org.apache.pinot.thirdeye.datasource.sql.resources.SqlDataSourceResource;
 import org.apache.pinot.thirdeye.detection.DetectionResource;
 import org.apache.pinot.thirdeye.detection.annotation.DetectionConfigurationResource;
 import org.apache.pinot.thirdeye.detection.yaml.YamlResource;
@@ -80,7 +82,6 @@ import org.apache.pinot.thirdeye.rootcause.RCAFramework;
 import org.apache.pinot.thirdeye.rootcause.impl.RCAFrameworkLoader;
 import org.apache.pinot.thirdeye.tracking.RequestStatisticsLogger;
 import io.dropwizard.assets.AssetsBundle;
-import io.dropwizard.auth.Authenticator;
 import io.dropwizard.auth.CachingAuthenticator;
 import io.dropwizard.bundles.redirect.PathRedirect;
 import io.dropwizard.bundles.redirect.RedirectBundle;
@@ -172,29 +173,24 @@ public class ThirdEyeDashboardApplication
     env.jersey().register(new ThirdEyeResource());
     env.jersey().register(new DataResource(anomalyFunctionFactory, alertFilterFactory));
     env.jersey().register(new AnomaliesResource(anomalyFunctionFactory, alertFilterFactory));
-    env.jersey().register(new DetectionMigrationResource(
-        DAO_REGISTRY.getAnomalyFunctionDAO(), DAO_REGISTRY.getAlertConfigDAO(), DAO_REGISTRY.getApplicationDAO(),
-        DAO_REGISTRY.getMetricConfigDAO(), DAO_REGISTRY.getDetectionConfigManager(),
-        DAO_REGISTRY.getDetectionAlertConfigManager(), DAO_REGISTRY.getDatasetConfigDAO(),
-        DAO_REGISTRY.getMergedAnomalyResultDAO()));
-    env.jersey().register(new OnboardResource(config));
     env.jersey().register(new EntityMappingResource());
     env.jersey().register(new OnboardDatasetMetricResource());
     env.jersey().register(new AutoOnboardResource(config));
     env.jersey().register(new ConfigResource(DAO_REGISTRY.getConfigDAO()));
     env.jersey().register(new CustomizedEventResource(DAO_REGISTRY.getEventDAO()));
     env.jersey().register(new TimeSeriesResource());
+    env.jersey().register(new AnomalyFlattenResource(DAO_REGISTRY.getMergedAnomalyResultDAO(),
+        DAO_REGISTRY.getDatasetConfigDAO(), DAO_REGISTRY.getMetricConfigDAO()));
     env.jersey().register(new UserDashboardResource(
         DAO_REGISTRY.getMergedAnomalyResultDAO(), DAO_REGISTRY.getMetricConfigDAO(), DAO_REGISTRY.getDatasetConfigDAO(),
         DAO_REGISTRY.getDetectionConfigManager(), DAO_REGISTRY.getDetectionAlertConfigManager()));
     env.jersey().register(new ApplicationResource(
         DAO_REGISTRY.getApplicationDAO(), DAO_REGISTRY.getMergedAnomalyResultDAO(),
         DAO_REGISTRY.getDetectionConfigManager(), DAO_REGISTRY.getDetectionAlertConfigManager()));
-    env.jersey().register(new DetectionOnboardResource(
-        DAO_REGISTRY.getTaskDAO(), DAO_REGISTRY.getAnomalyFunctionDAO()));
     env.jersey().register(new DetectionResource());
     env.jersey().register(new DetectionAlertResource(DAO_REGISTRY.getDetectionAlertConfigManager()));
-    env.jersey().register(new YamlResource());
+    env.jersey().register(new YamlResource(config.getDetectionPreviewConfig()));
+    env.jersey().register(new SqlDataSourceResource());
 
     TimeSeriesLoader timeSeriesLoader = new DefaultTimeSeriesLoader(
         DAO_REGISTRY.getMetricConfigDAO(), DAO_REGISTRY.getDatasetConfigDAO(),
@@ -238,21 +234,23 @@ public class ThirdEyeDashboardApplication
       LOG.error("Error loading the resource", e);
     }
 
+    // Authentication
     if (config.getAuthConfig() != null) {
       final AuthConfiguration authConfig = config.getAuthConfig();
 
       // default permissive authenticator
-      Authenticator<Credentials, ThirdEyePrincipal> authenticator = new ThirdEyeAuthenticatorDisabled();
+      Authenticator<ThirdEyeCredentials, ThirdEyePrincipal> authenticator = new ThirdEyeAuthenticatorDisabled();
 
       // ldap authenticator
       if (authConfig.isAuthEnabled()) {
-        final ThirdEyeAuthenticatorLdap authenticatorLdap = new ThirdEyeAuthenticatorLdap(authConfig.getDomainSuffix(), authConfig.getLdapUrl());
+        final ThirdEyeLdapAuthenticator
+            authenticatorLdap = new ThirdEyeLdapAuthenticator(authConfig.getDomainSuffix(), authConfig.getLdapUrl(), DAORegistry.getInstance().getSessionDAO());
         authenticator = new CachingAuthenticator<>(env.metrics(), authenticatorLdap, CacheBuilder.newBuilder().expireAfterWrite(authConfig.getCacheTTL(), TimeUnit.SECONDS));
       }
-      // auth filter
-      env.jersey().register(new ThirdEyeAuthFilter(authenticator, authConfig.getAllowedPaths(), authConfig.getAdminUsers()));
-      // auth resource
+
+      env.jersey().register(new ThirdEyeAuthFilter(authenticator, authConfig.getAllowedPaths(), authConfig.getAdminUsers(), DAORegistry.getInstance().getSessionDAO()));
       env.jersey().register(new AuthResource(authenticator, authConfig.getCookieTTL() * 1000));
+      env.jersey().register(new AuthValueFactoryProvider.Binder<>(ThirdEyePrincipal.class));
     }
 
     env.lifecycle().manage(new Managed() {

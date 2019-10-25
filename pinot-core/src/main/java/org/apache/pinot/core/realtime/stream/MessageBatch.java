@@ -18,11 +18,18 @@
  */
 package org.apache.pinot.core.realtime.stream;
 
+import org.apache.pinot.annotations.InterfaceAudience;
+import org.apache.pinot.annotations.InterfaceStability;
+import org.apache.pinot.common.metadata.RowMetadata;
+
+
 /**
  * Interface wrapping stream consumer. Throws IndexOutOfBoundsException when trying to access a message at an
  * invalid index.
  * @param <T>
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public interface MessageBatch<T> {
   /**
    *
@@ -50,6 +57,14 @@ public interface MessageBatch<T> {
    * @return
    */
   int getMessageLengthAtIndex(int index);
+
+  /**
+   * Returns the metadata associated with the message at a particular index. This typically includes the timestamp
+   * when the message was ingested by the upstream stream-provider and other relevant metadata.
+   */
+  default RowMetadata getMetadataAtIndex(int index) {
+    return null;
+  }
 
   /**
    * Returns the offset of the next message.

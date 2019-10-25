@@ -33,13 +33,9 @@
 import {
   set,
   get,
-  computed,
-  getProperties,
-  setProperties,
-  getWithDefault
+  setProperties
 } from '@ember/object';
 import { isPresent } from '@ember/utils';
-import { later } from '@ember/runloop';
 import Component from '@ember/component';
 
 export default Component.extend({
@@ -133,7 +129,6 @@ export default Component.extend({
         // Make sure 'Active' is selected by default when both are un-checked
         if (filterObj.filtersArray.filter(item => item.isActive).length === 0) {
           selectedArr = ['Active'];
-          const activeItem = filterObj.filtersArray.find(item => item.id === 'active');
         }
       }
       // Handle 'global' or 'primary' filter field toggling
@@ -158,6 +153,15 @@ export default Component.extend({
     toggleDisplay(clickedBlock) {
       // Note: toggleProperty will not be able to find 'filterBlocks', as it is not an observed property
       set(clickedBlock, 'isHidden', !clickedBlock.isHidden);
+    },
+
+    /**
+     * Bubbles clear filters action up to parent
+     * @method clearFilters
+     * @return {undefined}
+     */
+    clearFilters() {
+      this.get('onClearFilters')();
     }
   }
 });

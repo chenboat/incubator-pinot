@@ -19,11 +19,15 @@
 
 package org.apache.pinot.thirdeye.detection;
 
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Multimap;
+import java.util.HashMap;
 import org.apache.pinot.thirdeye.common.dimension.DimensionMap;
 import org.apache.pinot.thirdeye.datalayer.dto.MergedAnomalyResultDTO;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
+import org.apache.pinot.thirdeye.rootcause.impl.MetricEntity;
 
 
 public class DetectionTestUtils {
@@ -38,6 +42,12 @@ public class DetectionTestUtils {
     anomaly.setCollection(dataset);
     anomaly.setFunctionId(legacyFunctionId);
 
+    Multimap<String, String> filters = HashMultimap.create();
+    for (Map.Entry<String, String> dimension : dimensions.entrySet()) {
+      filters.put(dimension.getKey(), dimension.getValue());
+    }
+    anomaly.setMetricUrn(MetricEntity.fromMetric(1.0, 1l, filters).getUrn());
+
     DimensionMap dimMap = new DimensionMap();
     dimMap.putAll(dimensions);
     anomaly.setDimensions(dimMap);
@@ -47,6 +57,11 @@ public class DetectionTestUtils {
 
   public static MergedAnomalyResultDTO makeAnomaly(Long configId, long start, long end, String metric, String dataset, Map<String, String> dimensions) {
     return DetectionTestUtils.makeAnomaly(configId, null, start, end, metric, dataset, dimensions);
+  }
+
+  public static MergedAnomalyResultDTO setAnomalyId(MergedAnomalyResultDTO anomaly, long id) {
+    anomaly.setId(id);
+    return anomaly;
   }
 
   public static MergedAnomalyResultDTO makeAnomaly(long start, long end) {
@@ -87,5 +102,13 @@ public class DetectionTestUtils {
     result.setAvgCurrentVal(currentValue);
     result.setAvgBaselineVal(baselineValue);
     return result;
+  }
+
+  public static MergedAnomalyResultDTO makeAnomaly(long start, long end, long configId, String metricUrn,
+      double currentVal) {
+    MergedAnomalyResultDTO anomaly = makeAnomaly(configId, start, end, new HashMap<>());
+    anomaly.setMetricUrn(metricUrn);
+    anomaly.setAvgCurrentVal(currentVal);
+    return anomaly;
   }
 }

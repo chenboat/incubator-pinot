@@ -22,6 +22,24 @@ package org.apache.pinot.thirdeye.auto.onboard;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.Lists;
+import java.io.IOException;
+import java.security.KeyManagementException;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.collections4.MapUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.common.data.MetricFieldSpec;
 import org.apache.pinot.common.data.Schema;
 import org.apache.pinot.common.data.TimeGranularitySpec;
@@ -37,23 +55,6 @@ import org.apache.pinot.thirdeye.datalayer.util.Predicate;
 import org.apache.pinot.thirdeye.datasource.DAORegistry;
 import org.apache.pinot.thirdeye.datasource.MetadataSourceConfig;
 import org.apache.pinot.thirdeye.datasource.pinot.PinotThirdEyeDataSource;
-import java.io.IOException;
-import java.security.KeyManagementException;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import javax.annotation.Nullable;
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.collections.MapUtils;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,6 +68,10 @@ public class AutoOnboardPinotMetadataSource extends AutoOnboard {
 
   private static final Set<String> DIMENSION_SUFFIX_BLACKLIST = new HashSet<>(Arrays.asList("_topk", "_approximate", "_tDigest"));
 
+  /**
+   * Use "ROW_COUNT" as the special token for the count(*) metric for a pinot table
+   */
+  private static final String ROW_COUNT = "ROW_COUNT";
   private static final DAORegistry DAO_REGISTRY = DAORegistry.getInstance();
   private final AlertConfigManager alertDAO;
   private final DatasetConfigManager datasetDAO;
@@ -153,7 +158,7 @@ public class AutoOnboardPinotMetadataSource extends AutoOnboard {
       List<MetricConfigDTO> metrics = metricDAO.findByDataset(datasetConfigDTO.getDataset());
       int metricCount = metrics.size();
       for (MetricConfigDTO metric : metrics) {
-        if (!metric.isDerived()) {
+        if (!metric.isDerived() && !metric.getName().equals(ROW_COUNT)) {
           metricDAO.delete(metric);
           metricCount--;
         }
