@@ -199,7 +199,7 @@ public class PinotSegmentUploadRestletResource {
     File segmentFile;
     // If the segment file is local, just use it as the return entity; otherwise copy it from remote to local first.
     if (CommonConstants.Segment.LOCAL_SEGMENT_SCHEME.equals(segmentFileURI.getScheme())) {
-      segmentFile = new File(provider.getBaseDataDir(), StringUtil.join(File.separator, tableName, segmentName));
+      segmentFile = new File(provider.getBaseDataDir(), StringUtil.join("/", tableName, segmentName));
       builder.entity(segmentFile);
     } else {
       segmentFile = new File(StringUtil.join("/", _controllerConf.getLocalTempDir(), tableName,
