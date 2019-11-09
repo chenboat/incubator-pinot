@@ -202,7 +202,7 @@ public class PinotSegmentUploadRestletResource {
       segmentFile = new File(provider.getBaseDataDir(), StringUtil.join(File.separator, tableName, segmentName));
       builder.entity(segmentFile);
     } else {
-      segmentFile = new File(StringUtil.join("/", _controllerConf.getLocalTempDir(), tableName,
+      segmentFile = new File(StringUtil.join(File.separator, _controllerConf.getLocalTempDir(), tableName,
           StringUtil.join("_", segmentName, String.valueOf(System.nanoTime()))));
       pinotFS.copyToLocalFile(segmentFileURI, segmentFile);
       // Streaming in the tmp file and delete it afterward.
