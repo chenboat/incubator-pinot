@@ -81,6 +81,24 @@ public class ServerSegmentCompletionProtocolHandler {
     return sendRequest(url);
   }
 
+  // TODO We need to make this work with trusted certificates if the VIP is using https.
+  public SegmentCompletionProtocol.Response segmentCommitUpload(SegmentCompletionProtocol.Request.Params params,
+      final File segmentTarFile, final String controllerVipUrl) {
+    SegmentCompletionProtocol.SegmentCommitUploadRequest request =
+        new SegmentCompletionProtocol.SegmentCommitUploadRequest(params);
+
+    String hostPort;
+    String protocol;
+    try {
+      URI uri = URI.create(controllerVipUrl);
+      protocol = uri.getScheme();
+      hostPort = uri.getAuthority();
+    } catch (Exception e) {
+      throw new RuntimeException("Could not make URI", e);
+    }
+    String url = request.getUrl(hostPort, protocol);
+    return uploadSegment(url, params.getSegmentName(), segmentTarFile);
+  }
 
   // Replaced by segmentCommitEndWithMetadata().
   @Deprecated
@@ -105,15 +123,15 @@ public class ServerSegmentCompletionProtocolHandler {
     return sendCommitEndWithMetadataFiles(url, metadataFiles);
   }
 
-  public SegmentCompletionProtocol.Response segmentCommit(SegmentCompletionProtocol.Request.Params params) {
+  public SegmentCompletionProtocol.Response segmentCommit(SegmentCompletionProtocol.Request.Params params,
+      final File segmentTarFile) {
     SegmentCompletionProtocol.SegmentCommitRequest request = new SegmentCompletionProtocol.SegmentCommitRequest(params);
     String url = createSegmentCompletionUrl(request);
     if (url == null) {
       return SegmentCompletionProtocol.RESP_NOT_SENT;
     }
 
-    //TODO(tingchen): find the right return code.
-    return SegmentCompletionProtocol.RESP_NOT_SENT;
+    return uploadSegment(url, params.getSegmentName(), segmentTarFile);
   }
 
   public SegmentCompletionProtocol.Response extendBuildTime(SegmentCompletionProtocol.Request.Params params) {
@@ -188,6 +206,30 @@ public class ServerSegmentCompletionProtocolHandler {
     try {
       String responseStr = _fileUploadDownloadClient
           .uploadSegmentMetadataFiles(new URI(url), metadataFiles, _segmentUploadRequestTimeoutMs).getResponse();
+      response = SegmentCompletionProtocol.Response.fromJsonString(responseStr);
+      LOGGER.info("Controller response {} for {}", response.toJsonString(), url);
+      if (response.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.NOT_LEADER)) {
+        ControllerLeaderLocator.getInstance().invalidateCachedControllerLeader();
+      }
+    } catch (Exception e) {
+      // Catch all exceptions, we want the protocol to handle the case assuming the request was never sent.
+      response = SegmentCompletionProtocol.RESP_NOT_SENT;
+      LOGGER.error("Could not send request {}", url, e);
+      // Invalidate controller leader cache, as exception could be because of leader being down (deployment/failure) and hence unable to send {@link SegmentCompletionProtocol.ControllerResponseStatus.NOT_LEADER}
+      // If cache is not invalidated, we will not recover from exceptions until the controller comes back up
+      ControllerLeaderLocator.getInstance().invalidateCachedControllerLeader();
+    }
+    raiseSegmentCompletionProtocolResponseMetric(response);
+    return response;
+  }
+
+  private SegmentCompletionProtocol.Response uploadSegment(String url, final String segmentName,
+      final File segmentTarFile) {
+    SegmentCompletionProtocol.Response response;
+    try {
+      String responseStr = _fileUploadDownloadClient
+          .uploadSegment(new URI(url), segmentName, segmentTarFile, null, null, _segmentUploadRequestTimeoutMs)
+          .getResponse();
       response = SegmentCompletionProtocol.Response.fromJsonString(responseStr);
       LOGGER.info("Controller response {} for {}", response.toJsonString(), url);
       if (response.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.NOT_LEADER)) {
