@@ -32,10 +32,10 @@ import javax.annotation.concurrent.ThreadSafe;
 import org.apache.commons.configuration.Configuration;
 import org.apache.commons.configuration.ConfigurationException;
 import org.apache.commons.io.FileUtils;
+import org.apache.helix.HelixAdmin;
 import org.apache.helix.ZNRecord;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
 import org.apache.pinot.common.config.TableConfig;
-import org.apache.pinot.common.config.TableNameBuilder;
 import org.apache.pinot.common.data.Schema;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
 import org.apache.pinot.common.metrics.ServerMetrics;
@@ -69,10 +69,12 @@ public class HelixInstanceDataManager implements InstanceDataManager {
   private String _instanceId;
   private ZkHelixPropertyStore<ZNRecord> _propertyStore;
   private ServerMetrics _serverMetrics;
+  private HelixAdmin _helixAdmin;
+  private String _clusterName;
 
   @Override
   public synchronized void init(@Nonnull Configuration config, @Nonnull ZkHelixPropertyStore<ZNRecord> propertyStore,
-      @Nonnull ServerMetrics serverMetrics)
+      @Nonnull ServerMetrics serverMetrics, HelixAdmin helixAdmin, String clusterName)
       throws ConfigurationException {
     LOGGER.info("Initializing Helix instance data manager");
 
@@ -81,6 +83,8 @@ public class HelixInstanceDataManager implements InstanceDataManager {
     _instanceId = _instanceDataManagerConfig.getInstanceId();
     _propertyStore = propertyStore;
     _serverMetrics = serverMetrics;
+    _helixAdmin = helixAdmin;
+    _clusterName = clusterName;
 
     File instanceDataDir = new File(_instanceDataManagerConfig.getInstanceDataDir());
     if (!instanceDataDir.exists()) {
@@ -135,7 +139,7 @@ public class HelixInstanceDataManager implements InstanceDataManager {
         TableDataManagerConfig.getDefaultHelixTableDataManagerConfig(_instanceDataManagerConfig, tableNameWithType);
     tableDataManagerConfig.overrideConfigs(tableConfig);
     TableDataManager tableDataManager = TableDataManagerProvider
-        .getTableDataManager(tableDataManagerConfig, _instanceId, _propertyStore, _serverMetrics);
+        .getTableDataManager(tableDataManagerConfig, _instanceId, _propertyStore, _serverMetrics , _helixAdmin, _clusterName );
     tableDataManager.start();
     LOGGER.info("Created table data manager for table: {}", tableNameWithType);
     return tableDataManager;

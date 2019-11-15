@@ -23,6 +23,7 @@ import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,6 +31,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.commons.io.FileUtils;
+import org.apache.helix.model.ExternalView;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.config.IndexingConfig;
 import org.apache.pinot.common.config.TableConfig;
@@ -40,10 +42,13 @@ import org.apache.pinot.common.metadata.instance.InstanceZKMetadata;
 import org.apache.pinot.common.metadata.segment.LLCRealtimeSegmentZKMetadata;
 import org.apache.pinot.common.metadata.segment.RealtimeSegmentZKMetadata;
 import org.apache.pinot.common.segment.fetcher.SegmentFetcherFactory;
+import org.apache.pinot.common.utils.CommonConstants;
 import org.apache.pinot.common.utils.CommonConstants.Segment.Realtime.Status;
 import org.apache.pinot.common.utils.NamedThreadFactory;
 import org.apache.pinot.common.utils.SegmentName;
+import org.apache.pinot.common.utils.StringUtil;
 import org.apache.pinot.common.utils.TarGzCompressionUtils;
+import org.apache.pinot.common.utils.helix.HelixHelper;
 import org.apache.pinot.core.data.manager.BaseTableDataManager;
 import org.apache.pinot.core.data.manager.SegmentDataManager;
 import org.apache.pinot.core.indexsegment.immutable.ImmutableSegmentLoader;
@@ -257,8 +262,14 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     final File segmentFolder = new File(_indexDir, segmentName);
     FileUtils.deleteQuietly(segmentFolder);
     try {
-      SegmentFetcherFactory.getInstance().getSegmentFetcherBasedOnURI(uri).fetchSegmentToLocal(uri, tempFile);
-      _logger.info("Downloaded file from {} to {}; Length of downloaded file: {}", uri, tempFile, tempFile.length());
+      boolean downloadResult = downloadFromURI(uri, tempFile);
+      if (!downloadResult) {
+         String peerServerUri = getPeerServerURI(segmentName);
+         if (peerServerUri == null || !downloadFromURI(peerServerUri, tempFile)) {
+           _logger.warn("Download segment {} failed.", segmentName);
+           return;
+         }
+      }
       TarGzCompressionUtils.unTar(tempFile, tempSegmentFolder);
       _logger.info("Uncompressed file {} into tmp dir {}", tempFile, tempSegmentFolder);
       FileUtils.moveDirectory(tempSegmentFolder.listFiles()[0], segmentFolder);
@@ -270,6 +281,49 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
       FileUtils.deleteQuietly(tempFile);
       FileUtils.deleteQuietly(tempSegmentFolder);
     }
+  }
+
+  // Return the address of an ONLINE server hosting a segment.
+  private String getPeerServerURI(String segmentName) {
+    ExternalView externalViewForResource = HelixHelper.getExternalViewForResource(_helixAdmin, _clusterName, _tableNameWithType);
+    // Find out the ONLINE server serving the segment.
+    for(String segment : externalViewForResource.getPartitionSet()) {
+      if (!segmentName.equals(segment)) {
+        continue;
+      }
+
+      Map<String, String> instanceToStateMap = externalViewForResource.getStateMap(segmentName);
+      for (Map.Entry<String, String> instanceState : instanceToStateMap.entrySet()) {
+        if ("ONLINE".equals(instanceState.getValue())) {
+          _logger.info("Found ONLINE server {} for segment {}.", instanceState.getKey(), segmentName);
+          String instanceId = instanceState.getKey();
+
+          String namePortStr = instanceId.split(CommonConstants.Helix.PREFIX_OF_SERVER_INSTANCE)[1];
+          String hostName = namePortStr.split("_")[0];
+          int port;
+          try {
+            port = Integer.parseInt(namePortStr.split("_")[1]);
+          } catch (Exception e) {
+            port = CommonConstants.Helix.DEFAULT_SERVER_NETTY_PORT;
+          }
+
+          return StringUtil.join("/", "http://" + hostName + ":" + port,
+              "tables",  _tableNameWithType, "segments", segmentName);
+        }
+      }
+    }
+    return null;
+  }
+
+  private boolean downloadFromURI(String uri, File tempFile) {
+    try {
+      SegmentFetcherFactory.getInstance().getSegmentFetcherBasedOnURI(uri).fetchSegmentToLocal(uri, tempFile);
+      _logger.info("Downloaded file from {} to {}; Length of downloaded file: {}", uri, tempFile, tempFile.length());
+    } catch (Exception e) {
+      _logger.warn("Download segment from {} failed.", uri);
+      return false;
+    }
+    return true;
   }
 
   /**

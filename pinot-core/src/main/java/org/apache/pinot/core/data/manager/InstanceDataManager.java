@@ -26,6 +26,7 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.commons.configuration.Configuration;
 import org.apache.commons.configuration.ConfigurationException;
+import org.apache.helix.HelixAdmin;
 import org.apache.helix.ZNRecord;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
 import org.apache.pinot.common.metrics.ServerMetrics;
@@ -44,7 +45,7 @@ public interface InstanceDataManager {
    * <p>Should be called only once and before calling any other method.
    */
   void init(@Nonnull Configuration config, @Nonnull ZkHelixPropertyStore<ZNRecord> propertyStore,
-      @Nonnull ServerMetrics serverMetrics)
+      @Nonnull ServerMetrics serverMetrics, HelixAdmin helixAdmin, String clusterName)
       throws ConfigurationException;
 
   /**

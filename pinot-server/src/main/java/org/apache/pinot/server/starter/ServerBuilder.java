@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.LongAccumulator;
 
 import org.apache.commons.configuration.Configuration;
 import org.apache.commons.configuration.ConfigurationException;
+import org.apache.helix.HelixAdmin;
 import org.apache.helix.ZNRecord;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
 import org.apache.pinot.common.metrics.MetricsHelper;
@@ -51,15 +52,22 @@ public class ServerBuilder {
   private final ServerConf _serverConf;
   private final ZkHelixPropertyStore<ZNRecord> _propertyStore;
   private ServerMetrics _serverMetrics;
+  private HelixAdmin _helixAdmin;
+  private String _clusterName;
 
   /**
    * Construct with ServerConf object.
    *
    * @param serverConf Server config
+   * @param helixAdmin
+   * @param clusterName
    */
-  public ServerBuilder(ServerConf serverConf, ZkHelixPropertyStore<ZNRecord> propertyStore) {
+  public ServerBuilder(ServerConf serverConf, ZkHelixPropertyStore<ZNRecord> propertyStore, HelixAdmin helixAdmin,
+      String clusterName) {
     _serverConf = serverConf;
     _propertyStore = propertyStore;
+    _helixAdmin = helixAdmin;
+    _clusterName = clusterName;
     init();
   }
 
@@ -100,7 +108,7 @@ public class ServerBuilder {
     String className = _serverConf.getInstanceDataManagerClassName();
     LOGGER.info("Building instance data manager of class: {}", className);
     InstanceDataManager instanceDataManager = (InstanceDataManager) Class.forName(className).newInstance();
-    instanceDataManager.init(_serverConf.getInstanceDataManagerConfig(), _propertyStore, _serverMetrics);
+    instanceDataManager.init(_serverConf.getInstanceDataManagerConfig(), _propertyStore, _serverMetrics, _helixAdmin, _clusterName);
     return instanceDataManager;
   }
 
