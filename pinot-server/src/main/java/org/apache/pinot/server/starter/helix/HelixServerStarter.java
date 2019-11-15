@@ -169,7 +169,7 @@ public class HelixServerStarter {
     ServerSegmentCompletionProtocolHandler
         .init(_serverConf.subset(SegmentCompletionProtocol.PREFIX_OF_CONFIG_OF_SEGMENT_UPLOADER));
     _serverInstance = new ServerInstance();
-    _serverInstance.init(serverInstanceConfig, propertyStore);
+    _serverInstance.init(serverInstanceConfig, propertyStore, _helixAdmin, _helixClusterName);
     _serverInstance.start();
 
     // Register state model factory

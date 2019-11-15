@@ -21,6 +21,7 @@ package org.apache.pinot.server.starter;
 import java.util.concurrent.atomic.LongAccumulator;
 import javax.annotation.Nonnull;
 import org.apache.commons.configuration.Configuration;
+import org.apache.helix.HelixAdmin;
 import org.apache.helix.ZNRecord;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
 import org.apache.pinot.common.metrics.ServerMetrics;
@@ -54,12 +55,13 @@ public class ServerInstance {
 
   private boolean _started = false;
 
-  public void init(@Nonnull ServerConf serverConf, @Nonnull ZkHelixPropertyStore<ZNRecord> propertyStore)
+  public void init(@Nonnull ServerConf serverConf, @Nonnull ZkHelixPropertyStore<ZNRecord> propertyStore, @Nonnull
+      HelixAdmin helixAdmin, String helixClusterName)
       throws Exception {
     LOGGER.info("Initializing server instance");
 
     _serverConf = serverConf;
-    ServerBuilder serverBuilder = new ServerBuilder(_serverConf, propertyStore);
+    ServerBuilder serverBuilder = new ServerBuilder(_serverConf, propertyStore, helixAdmin, helixClusterName);
     _serverMetrics = serverBuilder.getServerMetrics();
     _instanceDataManager = serverBuilder.buildInstanceDataManager();
     _queryExecutor = serverBuilder.buildQueryExecutor(_instanceDataManager);

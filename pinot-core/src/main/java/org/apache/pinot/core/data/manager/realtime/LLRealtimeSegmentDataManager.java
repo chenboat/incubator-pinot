@@ -764,6 +764,7 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
   }
 
   private SegmentCompletionProtocol.Response doSplitCommit(SegmentCompletionProtocol.Response prevResponse) {
+    final File segmentTarFile = new File(_segmentBuildDescriptor.getSegmentTarFilePath());
     SegmentCompletionProtocol.Request.Params params = new SegmentCompletionProtocol.Request.Params();
 
     params.withSegmentName(_segmentNameStr).withOffset(_currentOffset).withNumRows(_numRowsConsumed)
@@ -780,12 +781,21 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
       return SegmentCompletionProtocol.RESP_FAILED;
     }
 
-    params = new SegmentCompletionProtocol.Request.Params();
-    params.withOffset(_currentOffset).withSegmentName(_segmentNameStr).withInstanceId(_instanceId);
+    if(_indexLoadingConfig.isEnableSegmentUploadToController()) {
+      params = new SegmentCompletionProtocol.Request.Params();
+      params.withOffset(_currentOffset).withSegmentName(_segmentNameStr).withInstanceId(_instanceId);
+      SegmentCompletionProtocol.Response segmentCommitUploadResponse =
+          _protocolHandler.segmentCommitUpload(params, segmentTarFile, prevResponse.getControllerVipUrl());
+      if (!segmentCommitUploadResponse.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.UPLOAD_SUCCESS)) {
+        segmentLogger.warn("Segment upload failed  with response {}", segmentCommitUploadResponse.toJsonString());
+        return SegmentCompletionProtocol.RESP_FAILED;
+      }
+    }
 
     params = new SegmentCompletionProtocol.Request.Params();
+    // TODO fill in the right segment store URI.
     params.withInstanceId(_instanceId).withOffset(_currentOffset).withSegmentName(_segmentNameStr)
-        .withSegmentLocation(_instanceId).withNumRows(_numRowsConsumed)
+        .withSegmentLocation("SEG_STORAGE_URI/tablename/segment").withNumRows(_numRowsConsumed)
         .withBuildTimeMillis(_segmentBuildDescriptor.getBuildTimeMillis())
         .withSegmentSizeBytes(_segmentBuildDescriptor.getSegmentSizeBytes())
         .withWaitTimeMillis(_segmentBuildDescriptor.getWaitTimeMillis());
@@ -800,7 +810,7 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
       commitEndResponse = _protocolHandler.segmentCommitEnd(params);
     }
 
-    // TODO(tingchen) Upload to the Pinot FS store.
+    // TODO(tingchen) Upload to the Pinot FS store in the background thread.
 
     if (!commitEndResponse.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.COMMIT_SUCCESS)) {
       segmentLogger.warn("CommitEnd failed  with response {}", commitEndResponse.toJsonString());
@@ -836,6 +846,7 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
   }
 
   protected SegmentCompletionProtocol.Response postSegmentCommitMsg() {
+    final File segmentTarFile = new File(_segmentBuildDescriptor.getSegmentTarFilePath());
     SegmentCompletionProtocol.Request.Params params = new SegmentCompletionProtocol.Request.Params();
     params.withInstanceId(_instanceId).withOffset(_currentOffset).withSegmentName(_segmentNameStr)
         .withNumRows(_numRowsConsumed).withInstanceId(_instanceId)
@@ -845,7 +856,7 @@ public class LLRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
     if (_isOffHeap) {
       params.withMemoryUsedBytes(_memoryManager.getTotalAllocatedBytes());
     }
-    SegmentCompletionProtocol.Response response = _protocolHandler.segmentCommit(params);
+    SegmentCompletionProtocol.Response response = _protocolHandler.segmentCommit(params, segmentTarFile);
     if (!response.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.COMMIT_SUCCESS)) {
       segmentLogger.warn("Commit failed  with response {}", response.toJsonString());
     }
