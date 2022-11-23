@@ -33,7 +33,9 @@ public class IndexingConfig extends BaseJsonConfig {
   private List<String> _rangeIndexColumns;
   private int _rangeIndexVersion = DEFAULT_RANGE_INDEX_VERSION;
   private List<String> _jsonIndexColumns;
-  private List<String> _h3IndexColumns;
+  // A list of columns which are CLP indexed. In general, a CLP column do not need dictionary encoding.
+  // A text index can be applied to the CLP indexed column.
+  private List<String> _clpIndexColumns;
   private List<String> _sortedColumn;
   private List<String> _bloomFilterColumns;
   private Map<String, BloomFilterConfig> _bloomFilterConfigs;
@@ -306,4 +308,13 @@ public class IndexingConfig extends BaseJsonConfig {
   public void setSegmentNameGeneratorType(String segmentNameGeneratorType) {
     _segmentNameGeneratorType = segmentNameGeneratorType;
   }
+
+  public List<String> getClpIndexColumns() {
+    return _clpIndexColumns;
+  }
+
+  public void setClpIndexColumns(List<String> clpIndexColumns) {
+    _clpIndexColumns = clpIndexColumns;
+  }
+
 }
