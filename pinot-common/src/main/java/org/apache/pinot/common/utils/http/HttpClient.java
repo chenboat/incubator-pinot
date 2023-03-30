@@ -47,6 +47,7 @@ import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.client.methods.RequestBuilder;
+import org.apache.http.client.utils.HttpClientUtils;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.entity.ContentType;
@@ -373,6 +374,10 @@ public class HttpClient implements AutoCloseable {
       StatusLine statusLine = response.getStatusLine();
       int statusCode = statusLine.getStatusCode();
       if (statusCode >= 300) {
+        // When the status code is above 300, the underlying entity of the response still needs to be consumed.
+        // i.e., EntityUtils.consume(response.getEntity()).
+        // Otherwise, the http connection will be leaked.
+        HttpClientUtils.closeQuietly(response);
         throw new HttpErrorStatusException(HttpClient.getErrorMessage(request, response), statusCode);
       }
 
