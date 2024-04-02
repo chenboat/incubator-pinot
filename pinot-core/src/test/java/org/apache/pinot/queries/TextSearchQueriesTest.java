@@ -318,6 +318,10 @@ public class TextSearchQueriesTest extends BaseQueriesTest {
         "SELECT INT_COL, SKILLS_TEXT_COL FROM MyTable WHERE TEXT_MATCH(SKILLS_TEXT_COL, '*ava realtime streaming "
             + "system* AND *chine learner*') LIMIT 50000";
     testTextSearchSelectQueryHelper(query3, 0, false, new ArrayList<>());
+
+    String query4 =
+        "SELECT INT_COL, SKILLS_TEXT_COL FROM MyTable WHERE TEXT_MATCH(SKILLS_TEXT_COL, 'java/realtime/streaming') LIMIT 50000";
+    testTextSearchSelectQueryHelper(query4, 0, false, new ArrayList<>());
   }
 
   /**
